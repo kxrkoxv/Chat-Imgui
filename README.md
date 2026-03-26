@@ -1,21 +1,34 @@
 <div align="center">
-
 # Chat MImGui
 
 ### Reemplazo completo del chat nativo de SA-MP con interfaz moderna
 
-[![Lua](https://img.shields.io/badge/Lua-5.1-2C2D72?style=flat-square&logo=lua&logoColor=white)](https://www.lua.org/)
+[![Lua](https://img.shields.io/badge/Lua-5.1-2C2D72?style=flat-square\&logo=lua\&logoColor=white)](https://www.lua.org/)
 [![MoonLoader](https://img.shields.io/badge/MoonLoader-0.26+-00599C?style=flat-square)](https://www.blast.hk/moonloader/)
 [![ImGui](https://img.shields.io/badge/ImGui-DirectX9-red?style=flat-square)](https://github.com/ocornut/imgui)
-[![SQLite](https://img.shields.io/badge/SQLite3-Database-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![SQLite](https://img.shields.io/badge/SQLite3-Database-003B57?style=flat-square\&logo=sqlite\&logoColor=white)](https://www.sqlite.org/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
 <br>
 
-<img src="https://i.postimg.cc/rphDhwhZ/087B97F4-C6E3-4883-889E-9EFAD9343DEF.png" alt="Chat MImGui Preview" width="720">
+<p align="center">
+  <img src="https://i.postimg.cc/rphDhwhZ/087B97F4-C6E3-4883-889E-9EFAD9343DEF.png" alt="Chat MImGui Preview" width="720"><br>
+  <sub><b>Vista del chat en juego</b></sub>
+</p>
 
-<img src="https://i.postimg.cc/v8nWm52M/8CAAE144-49AA-4A43-897E-F7A790974752.png" alt="Chat MImGui Menu Preview" width="720">
-*Sistema de chat reimaginado para SA-MP con renderizado DirectX9 y persistencia local*
+<br>
+
+<p align="center">
+  <img src="https://i.postimg.cc/v8nWm52M/8CAAE144-49AA-4A43-897E-F7A790974752.png" alt="Chat MImGui Menu Preview" width="720"><br>
+  <sub><b>Menú de configuración del sistema</b></sub>
+</p>
+
+<br>
+
+<i>Sistema de chat reimaginado para SA-MP con renderizado DirectX9 y persistencia local</i>
+
+</div>
+
 
 </div>
 
