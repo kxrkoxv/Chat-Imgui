@@ -12,7 +12,7 @@
 
 <br>
 
-<img src="[![087B97F4-C6E3-4883-889E-9EFAD9343DEF.png](https://i.postimg.cc/rphDhwhZ/087B97F4-C6E3-4883-889E-9EFAD9343DEF.png)](https://postimg.cc/TyD21fvn)" alt="Chat MImGui Preview" width="720">
+<img src="https://i.postimg.cc/rphDhwhZ/087B97F4-C6E3-4883-889E-9EFAD9343DEF.png" alt="Chat MImGui Preview" width="720">
 
 *Sistema de chat reimaginado para SA-MP con renderizado DirectX9 y persistencia local*
 
