@@ -12,7 +12,7 @@
 
 <br>
 
-<img src="[https://github.com/user-attachments/assets/fa24fbe5-a73a-4842-8d2e-9b06a93e5f58](https://private-user-images.githubusercontent.com/134182826/569966457-3e2cdbca-6dac-45b9-9438-08f34624a6e8.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NzQ1NDg4NjgsIm5iZiI6MTc3NDU0ODU2OCwicGF0aCI6Ii8xMzQxODI4MjYvNTY5OTY2NDU3LTNlMmNkYmNhLTZkYWMtNDViOS05NDM4LTA4ZjM0NjI0YTZlOC5wbmc_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwMzI2JTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDMyNlQxODA5MjhaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT05NzNiZWYyNGVjOGI1N2M1ZWUwNGI3NjQxZWJjYzkwZTVjZDVlMmZjNWFkNTY3NTY1YTg1ODkyZWIxYTEwNzYxJlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCJ9.YpcBjbwncjHGmaLYpaeWiTFFHof5p1qqfn7FwibvdWU)" alt="Chat MImGui Preview" width="720">
+<img src="https://github.com/user-attachments/assets/92505c61-1ae2-42d5-8a5d-a4955866c2c7" alt="Chat MImGui Preview" width="720">
 
 *Sistema de chat reimaginado para SA-MP con renderizado DirectX9 y persistencia local*
 
