@@ -1,5 +1,5 @@
 <div align="center">
-## Chat MImGui
+### Chat MImGui
 
 ### Reemplazo completo del chat nativo de SA-MP con interfaz moderna
 
