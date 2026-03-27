@@ -3,13 +3,20 @@ script_version_number(1)
 script_author('kxrko')
 
 -- ============================================================
---  VERSION Y ACTUALIZACIONES
+--  VERSION Y ACTUALIZACIONES (por version semantica)
 -- ============================================================
-local SCRIPT_VERSION = '1.0.0'
-local UPDATE_URL     = 'https://raw.githubusercontent.com/kxrko/chat-mimgui/main/version.txt'
-local _updateStatus  = nil   -- nil=sin checar, 'checking', 'ok', 'available', 'error'
-local _updateLatest  = ''
-local _updateChecked = false
+local REPO_OWNER     = 'kxrkoxv'
+local REPO_NAME      = 'Chat-Imgui'
+local REPO_BRANCH    = 'main'
+local RAW_SCRIPT_URL = 'https://raw.githubusercontent.com/' .. REPO_OWNER .. '/' .. REPO_NAME .. '/' .. REPO_BRANCH .. '/Chat.lua'
+
+-- Version actual del script (hardcodeada aqui, se incrementa con cada release)
+local CURRENT_VERSION = '1.0.0'
+
+-- Version remota obtenida de GitHub (se extrae de la linea script_version del archivo)
+local _remoteVersion  = ''
+local _updateStatus   = nil  -- nil=sin checar, 'checking', 'ok', 'available', 'error', 'updating', 'updated'
+local _updateMsg      = ''   -- mensaje extra para mostrar al usuario
 
 -- ============================================================
 --  DEPENDENCIAS
@@ -317,8 +324,6 @@ local hotkeyVK       = 0
 local hotkeyCapture  = false
 local hotkeyLastName = 'Ninguna'
 
--- (filtro avanzado eliminado - solo sistema de bloqueados)
-
 local function stripTags(text)
     return text:gsub('{%x%x%x%x%x%x%x%x}',''):gsub('{%x%x%x%x%x%x}','')
 end
@@ -558,7 +563,6 @@ local function renderColorText(text, msgId)
         local dl    = imgui.GetWindowDrawList()
         local isLast = (msgId == #messages)
 
-        -- Hover con coordenadas de pantalla (no consume input)
         local mx, my  = getCursorPos()
         local hovered = mx >= pos.x and mx <= pos.x + width
                      and my >= pos.y and my <= pos.y + lineH
@@ -853,7 +857,6 @@ local function drawTabFiltros()
     imgui.PopStyleColor()
     imgui.Spacing()
 
-    -- Lista de patrones bloqueados
     local rowH    = imgui.GetTextLineHeightWithSpacing() + 4
     local listH   = math.max(80, math.min(#blockedPatterns, 8) * rowH + 10)
     imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07,0.07,0.10,1.0))
@@ -868,7 +871,6 @@ local function drawTabFiltros()
     local toRemoveBlocked = nil
     for bi, pat in ipairs(blockedPatterns) do
         imgui.PushIDInt(bi)
-        -- boton X
         imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.42,0.08,0.08,0.85))
         imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.70,0.12,0.12,1.00))
         imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.85,0.16,0.16,1.00))
@@ -878,7 +880,6 @@ local function drawTabFiltros()
         end
         imgui.PopStyleColor(4)
         imgui.SameLine(nil, 8)
-        -- texto del patrn
         local disp = #pat > 64 and pat:sub(1,61)..'...' or pat
         imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.85,0.75,1.00,1.0))
         imgui.Text(u8(disp))
@@ -896,7 +897,6 @@ local function drawTabFiltros()
 
     imgui.Spacing()
 
-    -- Input + botn aadir manualmente
     imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.11,0.08,0.18,1.0))
     imgui.PushItemWidth(imgui.GetContentRegionAvail().x - 106)
     imgui.InputText(u8('##newblocked'), blockedNewBuf, ffi.sizeof(blockedNewBuf) - 1)
@@ -934,40 +934,125 @@ local function drawTabFiltros()
     imgui.PopStyleColor()
 end
 
--- ---- FUNCION: CHECK UPDATE ----------------------------------
-local function checkUpdate()
-    _updateStatus = 'checking'
+-- ============================================================
+--  SISTEMA DE ACTUALIZACIONES POR VERSION SEMANTICA
+-- ============================================================
+
+-- Compara dos versiones semanticas "X.Y.Z". Devuelve:
+--   1  si a > b
+--   0  si a == b
+--  -1  si a < b
+local function compareVersions(a, b)
+    local function parts(v)
+        local x, y, z = v:match('^(%d+)%.(%d+)%.(%d+)$')
+        return tonumber(x) or 0, tonumber(y) or 0, tonumber(z) or 0
+    end
+    local a1,a2,a3 = parts(a)
+    local b1,b2,b3 = parts(b)
+    if a1 ~= b1 then return a1 > b1 and 1 or -1 end
+    if a2 ~= b2 then return a2 > b2 and 1 or -1 end
+    if a3 ~= b3 then return a3 > b3 and 1 or -1 end
+    return 0
+end
+
+-- Extrae la version del header del script remoto:
+-- busca la linea: script_version_number(X) o una etiqueta como: -- VERSION: X.Y.Z
+-- Primero intenta la etiqueta, luego script_version_number como fallback numerico.
+local function extractRemoteVersion(content)
+    -- Formato preferido: CURRENT_VERSION = '1.0.0'
+    local v = content:match("CURRENT_VERSION%s*=%s*'([%d%.]+)'")
+    if v and v:match('^%d+%.%d+%.%d+$') then return v end
+    -- Fallback: busca script_version_number(X) y lo convierte a "X.0.0"
+    local n = content:match('script_version_number%((%d+)%)')
+    if n then return n .. '.0.0' end
+    return nil
+end
+
+-- Descarga el script remoto y extrae su version
+local function fetchRemoteVersion(callback)
     lua_thread.create(function()
-        local ok, result = pcall(function()
-            -- Intentar descarga via downloadUrlToFile (MoonLoader)
-            local tmpFile = getWorkingDirectory() .. '\\config\\chat_mimgui_ver.tmp'
-            if downloadUrlToFile then
-                downloadUrlToFile(UPDATE_URL, tmpFile)
-                wait(3000)
-                local f = io.open(tmpFile, 'r')
-                if f then
-                    local v = f:read('*l')
-                    f:close()
-                    os.remove(tmpFile)
-                    return v and v:match('^%s*(.-)%s*$') or nil
+        local tmpScript = getWorkingDirectory() .. '\\config\\chat_mimgui_ver.tmp'
+        local ok = false
+        if downloadUrlToFile then
+            os.remove(tmpScript)
+            downloadUrlToFile(RAW_SCRIPT_URL, tmpScript)
+            wait(5000)
+            local f = io.open(tmpScript, 'r')
+            if f then
+                -- Solo leer los primeros 2KB para encontrar la version (es rapido)
+                local content = f:read(2048)
+                f:close()
+                os.remove(tmpScript)
+                if content and #content > 10 then
+                    local ver = extractRemoteVersion(content)
+                    if ver then
+                        ok = true
+                        callback(ver)
+                    end
                 end
             end
-            return nil
-        end)
-        if ok and result and result ~= '' then
-            _updateLatest = result
-            if result == SCRIPT_VERSION then
-                _updateStatus = 'ok'
-            else
-                _updateStatus = 'available'
-            end
-        else
-            _updateStatus = 'error'
+        end
+        if not ok then
+            callback(nil)
         end
     end)
 end
 
+-- Descarga el script completo y lo aplica
+local function downloadAndApply(remoteVer)
+    _updateStatus = 'updating'
+    lua_thread.create(function()
+        local scriptPath = getWorkingDirectory() .. '\\Chat.lua'
+        local tmpScript  = getWorkingDirectory() .. '\\config\\chat_mimgui_new.tmp'
+        os.remove(tmpScript)
+        if downloadUrlToFile then
+            downloadUrlToFile(RAW_SCRIPT_URL, tmpScript)
+            wait(6000)
+            local f = io.open(tmpScript, 'r')
+            if f then
+                local content = f:read('*a')
+                f:close()
+                os.remove(tmpScript)
+                if content and #content > 100 then
+                    local out = io.open(scriptPath, 'w')
+                    if out then
+                        out:write(content)
+                        out:close()
+                        _updateStatus = 'updated'
+                        _updateMsg = 'Actualizado a v' .. remoteVer .. '. Recarga el script (F9 o /reload).'
+                        return
+                    end
+                end
+            end
+        end
+        _updateStatus = 'error'
+        _updateMsg = 'No se pudo descargar el archivo.'
+    end)
+end
 
+-- Chequeo principal: compara version local con version remota
+local function checkUpdate()
+    _updateStatus = 'checking'
+    _updateMsg    = ''
+    fetchRemoteVersion(function(remoteVer)
+        if not remoteVer then
+            _updateStatus = 'error'
+            _updateMsg    = 'No se pudo contactar GitHub.'
+            return
+        end
+        _remoteVersion = remoteVer
+        local cmp = compareVersions(remoteVer, CURRENT_VERSION)
+        if cmp <= 0 then
+            _updateStatus = 'ok'
+            _updateMsg    = ''
+        else
+            _updateStatus = 'available'
+            _updateMsg    = 'Nueva version: v' .. remoteVer
+        end
+    end)
+end
+
+-- ---- TAB: OPCIONES ------------------------------------------
 local function drawTabOpciones()
     imgui.Spacing()
 
@@ -1051,72 +1136,102 @@ local function drawTabOpciones()
     imgui.Separator()
     imgui.Spacing()
 
-    imgui.Text(u8('Version actual:'))
+    -- Version instalada (siempre CURRENT_VERSION hardcodeada en el script)
+    imgui.Text(u8('Version instalada:'))
     imgui.SameLine(nil, 6)
-    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.6,0.9,0.6,1.0))
-    imgui.Text(SCRIPT_VERSION)
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.55,0.80,0.55,1.0))
+    imgui.Text('v' .. CURRENT_VERSION)
     imgui.PopStyleColor()
 
-    if _updateStatus == nil or _updateStatus == 'error' then
-        -- Boton para buscar actualizacion
+    -- Version remota (si ya se consulto)
+    if _remoteVersion ~= '' then
+        imgui.Text(u8('Ultima en GitHub:'))
+        imgui.SameLine(nil, 6)
+        local isLatest = compareVersions(_remoteVersion, CURRENT_VERSION) <= 0
+        imgui.PushStyleColor(imgui.Col.Text,
+            isLatest and imgui.ImVec4(0.55,0.80,0.55,1.0) or imgui.ImVec4(1.0,0.82,0.20,1.0))
+        imgui.Text('v' .. _remoteVersion)
+        imgui.PopStyleColor()
+    end
+
+    imgui.Spacing()
+
+    -- Estado principal
+    if _updateStatus == nil then
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.60,1.0))
+        imgui.Text(u8('  Esperando verificacion automatica...'))
+        imgui.PopStyleColor()
+
+    elseif _updateStatus == 'checking' then
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.70,0.70,0.35,1.0))
+        imgui.Text(u8('  Consultando GitHub...'))
+        imgui.PopStyleColor()
+
+    elseif _updateStatus == 'ok' then
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.35,0.85,0.40,1.0))
+        imgui.Text(u8('  Tienes la version mas reciente.'))
+        imgui.PopStyleColor()
+        if _updateMsg ~= '' then
+            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.45,0.55,0.45,1.0))
+            imgui.TextWrapped(u8(_updateMsg))
+            imgui.PopStyleColor()
+        end
+
+    elseif _updateStatus == 'available' then
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0,0.85,0.15,1.0))
+        imgui.Text(u8('  Hay una actualizacion disponible!'))
+        imgui.PopStyleColor()
+        if _updateMsg ~= '' then
+            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.75,0.65,0.30,1.0))
+            imgui.TextWrapped(u8(_updateMsg))
+            imgui.PopStyleColor()
+        end
         imgui.Spacing()
+        imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.15,0.35,0.15,0.95))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.22,0.52,0.22,1.00))
+        imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.28,0.62,0.28,1.00))
+        imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(0.75,1.00,0.75,1.00))
+        if imgui.Button(u8('  Actualizar a v' .. _remoteVersion .. '  '), imgui.ImVec2(-1, 30)) then
+            downloadAndApply(_remoteVersion)
+        end
+        imgui.PopStyleColor(4)
+
+    elseif _updateStatus == 'updating' then
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.70,0.70,0.35,1.0))
+        imgui.Text(u8('  Descargando actualizacion...'))
+        imgui.PopStyleColor()
+
+    elseif _updateStatus == 'updated' then
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.35,0.90,0.45,1.0))
+        imgui.Text(u8('  Actualizacion aplicada!'))
+        imgui.PopStyleColor()
+        if _updateMsg ~= '' then
+            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.55,0.80,0.55,1.0))
+            imgui.TextWrapped(u8(_updateMsg))
+            imgui.PopStyleColor()
+        end
+
+    elseif _updateStatus == 'error' then
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.85,0.30,0.30,1.0))
+        imgui.Text(u8('  Error al verificar.'))
+        imgui.PopStyleColor()
+        if _updateMsg ~= '' then
+            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.65,0.35,0.35,1.0))
+            imgui.TextWrapped(u8(_updateMsg))
+            imgui.PopStyleColor()
+        end
+    end
+
+    imgui.Spacing()
+
+    if _updateStatus ~= 'updating' and _updateStatus ~= 'updated' and _updateStatus ~= 'checking' then
         imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.12,0.18,0.35,0.92))
         imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.20,0.30,0.55,1.00))
         imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.25,0.38,0.68,1.00))
         imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(0.75,0.88,1.00,1.00))
-        if imgui.Button(u8(_updateStatus == 'error' and '  Reintentar busqueda' or '  Buscar actualizacion'), imgui.ImVec2(-1, 26)) then
-            if not _updateChecked or _updateStatus == 'error' then
-                _updateChecked = true
-                checkUpdate()
-            end
-        end
-        imgui.PopStyleColor(4)
-        if _updateStatus == 'error' then
-            imgui.Spacing()
-            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.80,0.35,0.35,1.0))
-            imgui.TextWrapped(u8('No se pudo verificar. Revisa tu conexion.'))
-            imgui.PopStyleColor()
-        end
-
-    elseif _updateStatus == 'checking' then
-        imgui.Spacing()
-        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.7,0.7,0.4,1.0))
-        imgui.Text(u8('  Buscando actualizacion...'))
-        imgui.PopStyleColor()
-
-    elseif _updateStatus == 'ok' then
-        imgui.Spacing()
-        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.40,0.85,0.45,1.0))
-        imgui.Text(u8('  Ya tienes la version mas reciente.'))
-        imgui.PopStyleColor()
-        imgui.Spacing()
-        imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.10,0.14,0.24,0.80))
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18,0.26,0.42,1.00))
-        imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.22,0.32,0.52,1.00))
-        imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(0.60,0.72,0.90,1.00))
-        if imgui.Button(u8('  Verificar de nuevo'), imgui.ImVec2(-1, 26)) then
-            _updateStatus  = nil
-            _updateChecked = false
-        end
-        imgui.PopStyleColor(4)
-
-    elseif _updateStatus == 'available' then
-        imgui.SameLine(nil, 12)
-        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0,0.82,0.20,1.0))
-        imgui.Text(u8('  Nueva: ' .. _updateLatest))
-        imgui.PopStyleColor()
-        imgui.Spacing()
-        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.85,0.75,0.30,1.0))
-        imgui.TextWrapped(u8('Hay una actualizacion disponible. Descargala desde el repositorio del autor.'))
-        imgui.PopStyleColor()
-        imgui.Spacing()
-        imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.10,0.14,0.24,0.80))
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18,0.26,0.42,1.00))
-        imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.22,0.32,0.52,1.00))
-        imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(0.60,0.72,0.90,1.00))
-        if imgui.Button(u8('  Verificar de nuevo'), imgui.ImVec2(-1, 26)) then
-            _updateStatus  = nil
-            _updateChecked = false
+        local btnLabel = _updateStatus == 'error' and u8('  Reintentar') or u8('  Verificar actualizaciones')
+        if imgui.Button(btnLabel, imgui.ImVec2(-1, 26)) then
+            checkUpdate()
         end
         imgui.PopStyleColor(4)
     end
@@ -1408,7 +1523,6 @@ local chatWindow = imgui.OnFrame(
                     if addBlockedPattern(plain) then
                         saveBlocked()
                     end
-                    -- Borrar este mensaje y todos los iguales del historial
                     purgeBlockedFromHistory()
                 end
                 imgui.CloseCurrentPopup()
@@ -1442,7 +1556,6 @@ local chatWindow = imgui.OnFrame(
         end
         imgui.PopStyleColor(2)
 
-        -- Modal de edicin al mismo nivel que el contextual (no anidado dentro de l)
         imgui.SetNextWindowSize(imgui.ImVec2(500, 0), imgui.Cond.Always)
         imgui.PushStyleColor(imgui.Col.PopupBg, imgui.ImVec4(0.10,0.10,0.13,0.98))
         if imgui.BeginPopupModal('##edit_msg', nil, imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.AlwaysAutoResize) then
@@ -1629,6 +1742,10 @@ function main()
     assert(db_open(DB_PATH), '[ChatMImGui] No se pudo abrir la DB SQLite.')
     db_prepare_stmts()
 
+    -- Lanzar chequeo automatico de actualizaciones al iniciar
+    wait(100)
+    checkUpdate()
+
     while not isSampAvailable() do wait(50) end
 
     pInput = ffi.cast('struct stInputInfo*', sampGetInputInfoPtr())[0]
@@ -1728,11 +1845,10 @@ end
 -- ============================================================
 addEventHandler('onWindowMessage', function(msg, wparam, lparam)
 
-    -- WM_RBUTTONDOWN: calcular qu mensaje estaba bajo el cursor y sealar apertura del men
     if msg == 0x0204 and openChat then
         local mx, my = getCursorPos()
         local lineH  = imgui.GetTextLineHeightWithSpacing()
-        local winY   = 10 + 12  -- ventana en y=10, child ##msgs en y=12
+        local winY   = 10 + 12
         local relY   = my - winY + current_scroll
         local idx    = math.floor(relY / lineH) + 1
         if idx >= 1 and idx <= #messages then
