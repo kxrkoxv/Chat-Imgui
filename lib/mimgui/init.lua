@@ -147,30 +147,11 @@ local function RegisterEvents()
         if not mimgui.DisableInput then
             local keyboard = keyboardMsgs[msg]
             local mouse = mouseMsgs[msg]
-
-            -- El mouse solo se pasa a ImGui cuando el cursor esta activo
-            -- (es decir, cuando hay una ventana interactiva abierta que lo necesita).
-            -- Asi evitamos que ImGui intercepte el mouse del jugador mientras
-            -- solo se estan mostrando ventanas de solo lectura / HUD.
-            local disableMouse    = mimgui.DisableMouseInput or (mouse and not cursorActive)
-            local disableKeyboard = mimgui.DisableKeyboardInput
-
             if active and (keyboard or mouse) then
                 renderer:SwitchContext()
                 local io = imgui.GetIO()
-
-                -- Solo enviar el mensaje al backend de ImGui si el tipo de input
-                -- correspondiente no esta deshabilitado.
-                local shouldForwardKeyboard = keyboard and not disableKeyboard
-                local shouldForwardMouse    = mouse    and not disableMouse
-
-                if shouldForwardKeyboard or shouldForwardMouse then
-                    renderer:WindowMessage(msg, wparam, lparam)
-                end
-
-                -- Consumir el mensaje solo si ImGui lo quiere Y no fue bloqueado arriba.
-                if (shouldForwardKeyboard and io.WantCaptureKeyboard) or
-                   (shouldForwardMouse    and io.WantCaptureMouse) then
+                renderer:WindowMessage(msg, wparam, lparam)
+                if (keyboard and io.WantCaptureKeyboard) or (mouse and io.WantCaptureMouse) then
                     if msg == winmsg.WM_KEYDOWN or msg == winmsg.WM_SYSKEYDOWN then
                         keyState[wparam] = false
                         consumeWindowMessage(true, true, true)
@@ -260,9 +241,7 @@ end
 
 --- API ---
 mimgui._VERSION = '1.7.0'
-mimgui.DisableInput         = false  -- deshabilita TODO el input (mouse + teclado)
-mimgui.DisableMouseInput    = false  -- deshabilita solo el mouse hacia ImGui
-mimgui.DisableKeyboardInput = false  -- deshabilita solo el teclado hacia ImGui
+mimgui.DisableInput = false
 
 mimgui.ComboFlags = ImGuiEnum('ImGuiComboFlags_')
 mimgui.Dir = ImGuiEnum('ImGuiDir_')

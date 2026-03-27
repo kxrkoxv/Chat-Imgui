@@ -3,6 +3,15 @@ script_version_number(1)
 script_author('kxrko')
 
 -- ============================================================
+--  VERSION Y ACTUALIZACIONES
+-- ============================================================
+local SCRIPT_VERSION = '1.0.0'
+local UPDATE_URL     = 'https://raw.githubusercontent.com/kxrko/chat-mimgui/main/version.txt'
+local _updateStatus  = nil   -- nil=sin checar, 'checking', 'ok', 'available', 'error'
+local _updateLatest  = ''
+local _updateChecked = false
+
+-- ============================================================
 --  DEPENDENCIAS
 -- ============================================================
 local imgui    = require 'mimgui'
@@ -262,6 +271,11 @@ local _pendingContextMenu = false
 local _selPreviewActive  = false
 local _selPreviewTimeout = 0
 
+-- Estado del click derecho detectado manualmente
+local _rbuttonPending   = false
+local _rbuttonMsgId     = nil
+local _pendingEditModal = false
+
 local timestampStatus = true
 local showChat        = true
 local searchActive    = false
@@ -277,81 +291,100 @@ local layout = ffi.new('char[10]')
 local info   = ffi.new('char[10]')
 
 -- ============================================================
---  Sistema de Filtros
+--  SISTEMA DE HOTKEY CONFIGURABLE
 -- ============================================================
-local filterMode          = imgui.new.int(0)
-local filterModeNames     = imgui.new['const char*'][4]({'Todos', 'Chat (tipo 2)', 'Sistema (tipo 1)', 'Server (tipo 0)'})
-local filterTextBuf       = imgui.new.char[256]()
-local filterColorBuf      = imgui.new.char[8]()
-local filterPrefixBuf     = imgui.new.char[64]()
-local filterTimeFromBuf   = imgui.new.char[10]()
-local filterTimeToBuf     = imgui.new.char[10]()
-local filterCaseSensitive = imgui.new.bool(false)
-local filterInvert        = imgui.new.bool(false)
-local filterEnabled       = false
+local VK_NAMES = {
+    [0x70]='F1', [0x71]='F2', [0x72]='F3', [0x73]='F4',
+    [0x74]='F5', [0x75]='F6', [0x76]='F7', [0x77]='F8',
+    [0x78]='F9', [0x79]='F10',[0x7A]='F11',[0x7B]='F12',
+    [0x60]='Num0',[0x61]='Num1',[0x62]='Num2',[0x63]='Num3',
+    [0x64]='Num4',[0x65]='Num5',[0x66]='Num6',[0x67]='Num7',
+    [0x68]='Num8',[0x69]='Num9',
+    [0x2D]='Ins', [0x2E]='Del', [0x24]='Home',[0x23]='End',
+    [0x21]='PgUp',[0x22]='PgDn',
+    [0x25]='Left',[0x26]='Up', [0x27]='Right',[0x28]='Down',
+    [0x20]='Space',
+    [0x30]='0',[0x31]='1',[0x32]='2',[0x33]='3',[0x34]='4',
+    [0x35]='5',[0x36]='6',[0x37]='7',[0x38]='8',[0x39]='9',
+}
+for i = 65, 90 do VK_NAMES[i] = string.char(i) end
 
-local function timeToSec(s)
-    local h, m = s:match('^(%d%d):(%d%d)$')
-    if not h then return nil end
-    return tonumber(h) * 3600 + tonumber(m) * 60
+local function vkName(vk)
+    return VK_NAMES[vk] or string.format('VK_%02X', vk)
 end
 
-local function msgTimeSec(m)
-    local h, mn, s = (m.timestamp or ''):match('%[(%d%d):(%d%d):(%d%d)%]')
-    if not h then return nil end
-    return tonumber(h)*3600 + tonumber(mn)*60 + tonumber(s)
+local hotkeyVK       = 0
+local hotkeyCapture  = false
+local hotkeyLastName = 'Ninguna'
+
+-- (filtro avanzado eliminado - solo sistema de bloqueados)
+
+local function stripTags(text)
+    return text:gsub('{%x%x%x%x%x%x%x%x}',''):gsub('{%x%x%x%x%x%x}','')
+end
+
+-- ============================================================
+--  SISTEMA DE MENSAJES BLOQUEADOS
+-- ============================================================
+local blockedPatterns = {}
+local blockedNewBuf   = imgui.new.char[256]()
+
+local function serializeBlocked()
+    return table.concat(blockedPatterns, '\n')
+end
+
+local function deserializeBlocked(s)
+    blockedPatterns = {}
+    if not s or s == '' then return end
+    for line in s:gmatch('([^\n]+)') do
+        if line ~= '' then table.insert(blockedPatterns, line) end
+    end
+end
+
+local function addBlockedPattern(pat)
+    pat = pat:match('^%s*(.-)%s*$')
+    if pat == '' then return false end
+    for _, v in ipairs(blockedPatterns) do
+        if v:lower() == pat:lower() then return false end
+    end
+    table.insert(blockedPatterns, pat)
+    return true
+end
+
+local function removeBlockedPattern(i)
+    table.remove(blockedPatterns, i)
+end
+
+local function msgIsBlocked(m)
+    if #blockedPatterns == 0 then return false end
+    local hay = stripTags(u8:decode(m.text)):lower()
+    for _, pat in ipairs(blockedPatterns) do
+        if hay:find(pat:lower(), 1, true) then return true end
+    end
+    return false
+end
+
+local function purgeBlockedFromHistory()
+    local i = 1
+    while i <= #messages do
+        if msgIsBlocked(messages[i]) then
+            table.remove(messages, i)
+        else
+            i = i + 1
+        end
+    end
+end
+
+local function saveBlocked()
+    local val = serializeBlocked()
+    db_exec('BEGIN;')
+    db_set('filter.blocked', val)
+    db_exec('COMMIT;')
+    _dirty['filter.blocked'] = val
 end
 
 local function msgPassesFilter(m)
-    local pass = true
-    if not filterEnabled then return true end
-
-    local mode = filterMode[0]
-    if mode == 1 and m.msgType ~= 2 then pass = false end
-    if mode == 2 and m.msgType ~= 1 then pass = false end
-    if mode == 3 and m.msgType ~= 0 then pass = false end
-
-    if pass then
-        local ft = ffi.string(filterTextBuf)
-        if ft ~= '' then
-            local haystack = u8:decode(m.text)
-            if not filterCaseSensitive[0] then
-                ft       = ft:lower()
-                haystack = haystack:lower()
-            end
-            if not haystack:find(ft, 1, true) then pass = false end
-        end
-    end
-
-    if pass then
-        local fp = ffi.string(filterPrefixBuf)
-        if fp ~= '' then
-            local hay = u8:decode(m.text)
-            if not filterCaseSensitive[0] then fp = fp:lower(); hay = hay:lower() end
-            if not hay:find(fp, 1, true) then pass = false end
-        end
-    end
-
-    if pass then
-        local fc = ffi.string(filterColorBuf):upper()
-        if fc ~= '' then
-            local msgClr = m.color:match('{(%x+)}') or ''
-            if not msgClr:upper():find(fc, 1, true) then pass = false end
-        end
-    end
-
-    if pass then
-        local tf = ffi.string(filterTimeFromBuf)
-        local tt = ffi.string(filterTimeToBuf)
-        local sfrom = timeToSec(tf)
-        local sto   = timeToSec(tt)
-        local smsg  = msgTimeSec(m)
-        if smsg and sfrom and smsg < sfrom then pass = false end
-        if smsg and sto   and smsg > sto   then pass = false end
-    end
-
-    if filterInvert[0] then pass = not pass end
-    return pass
+    return not msgIsBlocked(m)
 end
 
 -- ============================================================
@@ -407,15 +440,8 @@ local DEFAULTS = {
     ['val.line_count']         = '15',
     ['val.max_msgs']           = '500',
     ['val.timestamp']          = '1',
-    ['filter.mode']            = '0',
-    ['filter.text']            = '',
-    ['filter.color']           = '',
-    ['filter.prefix']          = '',
-    ['filter.time_from']       = '',
-    ['filter.time_to']         = '',
-    ['filter.case_sensitive']  = '0',
-    ['filter.invert']          = '0',
-    ['filter.enabled']         = '0',
+    ['filter.blocked']         = '',
+    ['hotkey.settings']        = '0',
 }
 
 local function cfgGet(key)
@@ -444,10 +470,6 @@ local function splitsigned(n)
     if x >= 0x8000 then x = x - 0xffff end
     if y >= 0x8000 then y = y - 0xffff end
     return x, y
-end
-
-local function stripTags(text)
-    return text:gsub('{%x%x%x%x%x%x%x%x}',''):gsub('{%x%x%x%x%x%x}','')
 end
 
 local function pushMsg(entry)
@@ -500,17 +522,12 @@ local function loadConfig()
     chatLinesInt = imgui.new.int(chatLines)
     fontSize     = imgui.new.int(tonumber(cfgGet('val.font_size')) or 15)
 
-    filterMode[0]           = tonumber(cfgGet('filter.mode')) or 0
-    filterEnabled           = cfgGet('filter.enabled') == '1'
-    filterCaseSensitive[0]  = cfgGet('filter.case_sensitive') == '1'
-    filterInvert[0]         = cfgGet('filter.invert') == '1'
-    imgui.StrCopy(filterTextBuf,     cfgGet('filter.text'))
-    imgui.StrCopy(filterColorBuf,    cfgGet('filter.color'))
-    imgui.StrCopy(filterPrefixBuf,   cfgGet('filter.prefix'))
-    imgui.StrCopy(filterTimeFromBuf, cfgGet('filter.time_from'))
-    imgui.StrCopy(filterTimeToBuf,   cfgGet('filter.time_to'))
+    deserializeBlocked(cfgGet('filter.blocked'))
 
     timestampStatus = cfgGet('val.timestamp') ~= '0'
+
+    hotkeyVK       = tonumber(cfgGet('hotkey.settings')) or 0
+    hotkeyLastName = hotkeyVK ~= 0 and vkName(hotkeyVK) or 'Ninguna'
 end
 
 -- ============================================================
@@ -535,38 +552,28 @@ local function renderColorText(text, msgId)
     end
 
     if (openChat or _selPreviewActive) and msgId then
-        local lineH   = imgui.GetTextLineHeight()
-        local pos     = imgui.GetCursorScreenPos()
-        local width   = imgui.GetContentRegionAvail().x
-        local dl      = imgui.GetWindowDrawList()
-        local isLast  = (msgId == #messages)
-        local hovered = imgui.IsMouseHoveringRect(
-            imgui.ImVec2(pos.x, pos.y),
-            imgui.ImVec2(pos.x + width, pos.y + lineH), true)
+        local lineH = imgui.GetTextLineHeight()
+        local pos   = imgui.GetCursorScreenPos()
+        local width = imgui.GetContentRegionAvail().x
+        local dl    = imgui.GetWindowDrawList()
+        local isLast = (msgId == #messages)
+
+        -- Hover con coordenadas de pantalla (no consume input)
+        local mx, my  = getCursorPos()
+        local hovered = mx >= pos.x and mx <= pos.x + width
+                     and my >= pos.y and my <= pos.y + lineH
 
         if _selPreviewActive and isLast then
-            local c = imgui.ColorConvertFloat4ToU32(imgui.ImVec4(
+            local col = imgui.ColorConvertFloat4ToU32(imgui.ImVec4(
                 C.selNormal.vec.x, C.selNormal.vec.y, C.selNormal.vec.z,
                 math.min(C.selNormal.vec.w, 0.55)))
-            dl:AddRectFilled(imgui.ImVec2(pos.x, pos.y), imgui.ImVec2(pos.x + width, pos.y + lineH), c)
-        elseif openChat then
-            if hovered then
-                local c = imgui.ColorConvertFloat4ToU32(imgui.ImVec4(
-                    C.selHovered.vec.x, C.selHovered.vec.y, C.selHovered.vec.z,
-                    math.min(C.selHovered.vec.w, 0.70)))
-                dl:AddRectFilled(imgui.ImVec2(pos.x, pos.y), imgui.ImVec2(pos.x + width, pos.y + lineH), c)
-            end
+            dl:AddRectFilled(imgui.ImVec2(pos.x, pos.y), imgui.ImVec2(pos.x + width, pos.y + lineH), col)
+        elseif openChat and hovered then
+            local col = imgui.ColorConvertFloat4ToU32(imgui.ImVec4(
+                C.selHovered.vec.x, C.selHovered.vec.y, C.selHovered.vec.z,
+                math.min(C.selHovered.vec.w, 0.70)))
+            dl:AddRectFilled(imgui.ImVec2(pos.x, pos.y), imgui.ImVec2(pos.x + width, pos.y + lineH), col)
         end
-
-        imgui.InvisibleButton('##sel_'..msgId, imgui.ImVec2(width, lineH))
-        if imgui.IsItemHovered() then
-            contextMenuOpen = true
-            if imgui.IsMouseClicked(1) then
-                contextMenuId = msgId
-                _pendingContextMenu = true
-            end
-        end
-        imgui.SetCursorScreenPos(imgui.ImVec2(pos.x, pos.y))
     end
 
     local full  = text:gsub('{(%x%x%x%x%x%x)}', '{%1FF}')
@@ -716,10 +723,9 @@ local function closeChat()
     _needsFocus         = false
     _pendingContextMenu = false
     contextMenuOpen     = false
-    contextMenuId       = nil
+    _rbuttonPending     = false
     noScroll            = false
     _forceClosePopups   = true
-    -- *** Liberar el mouse de ImGui al cerrar el chat ***
     imgui.DisableMouseInput = true
     if pInput then pInput.iInputEnabled = 0 end
     imgui.CaptureMouseFromApp(false)
@@ -727,17 +733,462 @@ local function closeChat()
 end
 
 -- ============================================================
+--  SETTINGS TABS
+-- ============================================================
+
+-- ---- TAB: APARIENCIA ----------------------------------------
+local function drawTabApariencia()
+    imgui.Spacing()
+
+    local SEL_ALPHA_CAP = { ['color.sel_normal'] = 0.55, ['color.sel_hovered'] = 0.70 }
+    local function colorRow(label, entry, dbKey)
+        imgui.Text(label)
+        imgui.SameLine(imgui.GetWindowWidth() - 56)
+        if imgui.ColorEdit4('##' .. dbKey, entry.flt,
+            imgui.ColorEditFlags.NoInputs + imgui.ColorEditFlags.NoLabel +
+            imgui.ColorEditFlags.AlphaBar + imgui.ColorEditFlags.AlphaPreview) then
+            local cap = SEL_ALPHA_CAP[dbKey]
+            if cap then entry.flt[3] = math.min(entry.flt[3], cap) end
+            syncVec(entry)
+            cfgSet(dbKey, fltToStr(entry.flt))
+        end
+        if SEL_ALPHA_CAP[dbKey] then
+            if imgui.IsItemActive() or imgui.IsItemHovered() then
+                local cap = SEL_ALPHA_CAP[dbKey]
+                entry.flt[3] = math.min(entry.flt[3], cap)
+                syncVec(entry)
+                _selPreviewActive  = true
+                _selPreviewTimeout = os.clock() + 0.3
+                showChat           = true
+            end
+        end
+    end
+
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
+    imgui.Text(u8('  Fuente y tamano'))
+    imgui.PopStyleColor()
+    imgui.Separator()
+    imgui.Spacing()
+
+    if #fonts > 0 then
+        imgui.Text(u8('Fuente:'))
+        imgui.PushItemWidth(-1)
+        if imgui.Combo('##fcmb', fontSelected, fontsArray, #fonts) then
+            fontChanged = true
+            cfgSet('val.font_name', fonts[fontSelected[0]+1] or cfgGet('val.font_name'))
+        end
+        imgui.PopItemWidth()
+    end
+    imgui.Spacing()
+    if imgui.SliderInt(u8('Tamano de fuente'), fontSize, 8, 36) then
+        fontSizeChanged = true
+        cfgSet('val.font_size', tostring(fontSize[0]))
+    end
+    imgui.Spacing()
+    if imgui.SliderInt(u8('Lineas visibles del chat'), chatLinesInt, 4, 60) then
+        chatLines = chatLinesInt[0]
+        cfgSet('val.line_count', tostring(chatLines))
+    end
+
+    imgui.Spacing(); imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
+    imgui.Text(u8('  Colores de chat'))
+    imgui.PopStyleColor()
+    imgui.Separator(); imgui.Spacing()
+
+    colorRow(u8('Fondo del chat:'),        C.chat,      'color.chat_bg')
+    colorRow(u8('Fondo del input:'),       C.input,     'color.input_bg')
+    colorRow(u8('Borde de ventana:'),      C.border,    'color.border')
+    colorRow(u8('Color del texto:'),       C.text,      'color.text_color')
+    colorRow(u8('Timestamps:'),            C.timestamp, 'color.timestamp')
+    colorRow(u8('Badge no leidos:'),       C.unread,    'color.unread')
+    colorRow(u8('Seleccion mensajes:'),    C.selNormal,  'color.sel_normal')
+    colorRow(u8('Seleccion hover:'),       C.selHovered, 'color.sel_hovered')
+
+    imgui.Spacing(); imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
+    imgui.Text(u8('  Scrollbar'))
+    imgui.PopStyleColor()
+    imgui.Separator(); imgui.Spacing()
+
+    colorRow(u8('Fondo scrollbar:'),  C.scrollBG,        'color.scroll_bg')
+    colorRow(u8('Cursor scrollbar:'), C.scrollGrab,      'color.scroll_grab')
+    colorRow(u8('Cursor activo:'),    C.scrollGrabActive,'color.scroll_grab_act')
+    colorRow(u8('Fondo hover:'),      C.scrollHov,       'color.scroll_hov')
+    colorRow(u8('Fondo activo:'),     C.scrollAct,       'color.scroll_act')
+
+    imgui.Spacing(); imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
+    imgui.Text(u8('  Botones del menu contextual'))
+    imgui.PopStyleColor()
+    imgui.Separator(); imgui.Spacing()
+
+    colorRow(u8('Boton normal:'), C.btn,    'color.btn')
+    colorRow(u8('Boton hover:'),  C.btnHov, 'color.btn_hov')
+    colorRow(u8('Boton activo:'), C.btnAct, 'color.btn_act')
+
+    imgui.Spacing(); imgui.Spacing()
+    if imgui.Button(u8('  Restablecer colores'), imgui.ImVec2(-1, 28)) then
+        db_exec('DELETE FROM config WHERE key LIKE "color.%";')
+        _dirty = {}
+        loadConfig()
+    end
+    imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.40,0.40,0.50,1.0))
+    imgui.TextWrapped(u8('Los cambios se aplican y guardan automaticamente.'))
+    imgui.PopStyleColor()
+end
+
+-- ---- TAB: FILTROS -------------------------------------------
+local function drawTabFiltros()
+    imgui.Spacing()
+
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.75,0.45,1.00,1.0))
+    imgui.Text(u8('  Mensajes bloqueados  (' .. #blockedPatterns .. ')'))
+    imgui.PopStyleColor()
+    imgui.Separator()
+    imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.40,0.40,0.50,1.0))
+    imgui.TextWrapped(u8('Los mensajes que coincidan con estos patrones se ocultan automaticamente del chat. Puedes bloquear mensajes haciendo click derecho sobre ellos.'))
+    imgui.PopStyleColor()
+    imgui.Spacing()
+
+    -- Lista de patrones bloqueados
+    local rowH    = imgui.GetTextLineHeightWithSpacing() + 4
+    local listH   = math.max(80, math.min(#blockedPatterns, 8) * rowH + 10)
+    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07,0.07,0.10,1.0))
+    imgui.PushStyleColor(imgui.Col.Border,  imgui.ImVec4(0.30,0.15,0.50,0.5))
+    imgui.BeginChild('##blocked_list', imgui.ImVec2(-1, listH), true)
+    if #blockedPatterns == 0 then
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.35,0.35,0.45,1.0))
+        imgui.SetCursorPosY(imgui.GetCursorPosY() + 8)
+        imgui.Text(u8('  (ninguno)'))
+        imgui.PopStyleColor()
+    end
+    local toRemoveBlocked = nil
+    for bi, pat in ipairs(blockedPatterns) do
+        imgui.PushIDInt(bi)
+        -- boton X
+        imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.42,0.08,0.08,0.85))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.70,0.12,0.12,1.00))
+        imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.85,0.16,0.16,1.00))
+        imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(1.00,0.65,0.65,1.00))
+        if imgui.Button('X##bd', imgui.ImVec2(22, 0)) then
+            toRemoveBlocked = bi
+        end
+        imgui.PopStyleColor(4)
+        imgui.SameLine(nil, 8)
+        -- texto del patrn
+        local disp = #pat > 64 and pat:sub(1,61)..'...' or pat
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.85,0.75,1.00,1.0))
+        imgui.Text(u8(disp))
+        imgui.PopStyleColor()
+        imgui.PopID()
+    end
+    imgui.EndChild()
+    imgui.PopStyleColor(2)
+
+    if toRemoveBlocked then
+        removeBlockedPattern(toRemoveBlocked)
+        saveBlocked()
+        purgeBlockedFromHistory()
+    end
+
+    imgui.Spacing()
+
+    -- Input + botn aadir manualmente
+    imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.11,0.08,0.18,1.0))
+    imgui.PushItemWidth(imgui.GetContentRegionAvail().x - 106)
+    imgui.InputText(u8('##newblocked'), blockedNewBuf, ffi.sizeof(blockedNewBuf) - 1)
+    imgui.PopItemWidth()
+    imgui.PopStyleColor()
+    imgui.SameLine(nil, 4)
+    imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.22,0.10,0.40,0.92))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.38,0.16,0.62,1.00))
+    imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.50,0.22,0.78,1.00))
+    imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(0.88,0.68,1.00,1.00))
+    if imgui.Button(u8('+ Bloquear'), imgui.ImVec2(-1, 0)) then
+        local newPat = ffi.string(blockedNewBuf)
+        if addBlockedPattern(newPat) then
+            saveBlocked()
+            purgeBlockedFromHistory()
+        end
+        imgui.StrCopy(blockedNewBuf, '')
+    end
+    imgui.PopStyleColor(4)
+
+    imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.25,0.08,0.08,0.88))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.45,0.12,0.12,1.00))
+    imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.60,0.15,0.15,1.00))
+    imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(1.00,0.65,0.65,1.00))
+    if imgui.Button(u8('  Borrar todos los bloqueados'), imgui.ImVec2(-1, 26)) then
+        blockedPatterns = {}
+        saveBlocked()
+    end
+    imgui.PopStyleColor(4)
+
+    imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.38,0.38,0.48,1.0))
+    imgui.TextWrapped(u8('Tip: el patron es texto plano. El bloqueo no distingue mayusculas/minusculas y busca coincidencia parcial. Si el patron aparece en cualquier parte del mensaje, este se oculta.'))
+    imgui.PopStyleColor()
+end
+
+-- ---- FUNCION: CHECK UPDATE ----------------------------------
+local function checkUpdate()
+    _updateStatus = 'checking'
+    lua_thread.create(function()
+        local ok, result = pcall(function()
+            -- Intentar descarga via downloadUrlToFile (MoonLoader)
+            local tmpFile = getWorkingDirectory() .. '\\config\\chat_mimgui_ver.tmp'
+            if downloadUrlToFile then
+                downloadUrlToFile(UPDATE_URL, tmpFile)
+                wait(3000)
+                local f = io.open(tmpFile, 'r')
+                if f then
+                    local v = f:read('*l')
+                    f:close()
+                    os.remove(tmpFile)
+                    return v and v:match('^%s*(.-)%s*$') or nil
+                end
+            end
+            return nil
+        end)
+        if ok and result and result ~= '' then
+            _updateLatest = result
+            if result == SCRIPT_VERSION then
+                _updateStatus = 'ok'
+            else
+                _updateStatus = 'available'
+            end
+        else
+            _updateStatus = 'error'
+        end
+    end)
+end
+
+
+local function drawTabOpciones()
+    imgui.Spacing()
+
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
+    imgui.Text(u8('  Memoria'))
+    imgui.PopStyleColor()
+    imgui.Separator()
+    imgui.Spacing()
+
+    imgui.Text(u8('Limite de mensajes en memoria:'))
+    imgui.SameLine(nil, 8)
+    local maxBuf = imgui.new.char[8](tostring(MAX_MESSAGES))
+    imgui.PushItemWidth(80)
+    imgui.InputText('##maxmsg', maxBuf, 7, imgui.InputTextFlags.CharsDecimal)
+    if imgui.IsItemDeactivatedAfterEdit() then
+        local v = tonumber(ffi.string(maxBuf))
+        if v and v >= 50 and v <= 5000 then
+            MAX_MESSAGES = v
+            cfgSet('val.max_msgs', tostring(v))
+        end
+    end
+    imgui.PopItemWidth()
+    imgui.SameLine(nil, 8)
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.4,0.4,0.5,1))
+    imgui.Text(u8('(50 - 5000)'))
+    imgui.PopStyleColor()
+
+    imgui.Spacing(); imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
+    imgui.Text(u8('  Estadisticas'))
+    imgui.PopStyleColor()
+    imgui.Separator()
+    imgui.Spacing()
+
+    local function statRow(label, val)
+        imgui.Text(label)
+        imgui.SameLine(nil, 6)
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.6,0.7,1.0,1.0))
+        imgui.Text(tostring(val))
+        imgui.PopStyleColor()
+    end
+    statRow(u8('Mensajes en historial:'), #messages)
+    statRow(u8('Enviados guardados:'),    #sendHistory)
+    statRow(u8('Sin leer:'),              unreadCount)
+
+    imgui.Spacing(); imgui.Spacing()
+    if imgui.Button(u8('  Limpiar chat'), imgui.ImVec2(-1, 28)) then
+        messages             = {}
+        unreadCount          = 0
+        setup_current_scroll = 0
+        noScroll             = false
+    end
+    imgui.Spacing()
+    if imgui.Button(u8('  Limpiar historial enviados'), imgui.ImVec2(-1, 28)) then
+        sendHistory    = {}
+        lastHistoryIdx = 0
+    end
+
+    imgui.Spacing(); imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
+    imgui.Text(u8('  Comandos y atajos'))
+    imgui.PopStyleColor()
+    imgui.Separator()
+    imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.65,0.65,0.75,1.0))
+    imgui.TextWrapped(u8(
+        '/timestamp  |  /chconfig  |  /clearchat\n\n' ..
+        'T / F   abrir chat          F5   ocultar/mostrar\n' ..
+        'Ctrl+F  buscar              ESC  cerrar input\n' ..
+        'PgUp/PgDn  scroll rapido    Rueda  desplazar\n' ..
+        'Flechas arriba/abajo  historial de enviados\n\n' ..
+        'Hotkey config: asignable en la pestana "Teclas"'
+    ))
+    imgui.PopStyleColor()
+
+    -- ---- ACTUALIZACIONES ----
+    imgui.Spacing(); imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
+    imgui.Text(u8('  Actualizaciones'))
+    imgui.PopStyleColor()
+    imgui.Separator()
+    imgui.Spacing()
+
+    imgui.Text(u8('Version actual:'))
+    imgui.SameLine(nil, 6)
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.6,0.9,0.6,1.0))
+    imgui.Text(SCRIPT_VERSION)
+    imgui.PopStyleColor()
+
+    if _updateStatus == nil or _updateStatus == 'error' then
+        -- Boton para buscar actualizacion
+        imgui.Spacing()
+        imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.12,0.18,0.35,0.92))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.20,0.30,0.55,1.00))
+        imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.25,0.38,0.68,1.00))
+        imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(0.75,0.88,1.00,1.00))
+        if imgui.Button(u8(_updateStatus == 'error' and '  Reintentar busqueda' or '  Buscar actualizacion'), imgui.ImVec2(-1, 26)) then
+            if not _updateChecked or _updateStatus == 'error' then
+                _updateChecked = true
+                checkUpdate()
+            end
+        end
+        imgui.PopStyleColor(4)
+        if _updateStatus == 'error' then
+            imgui.Spacing()
+            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.80,0.35,0.35,1.0))
+            imgui.TextWrapped(u8('No se pudo verificar. Revisa tu conexion.'))
+            imgui.PopStyleColor()
+        end
+
+    elseif _updateStatus == 'checking' then
+        imgui.Spacing()
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.7,0.7,0.4,1.0))
+        imgui.Text(u8('  Buscando actualizacion...'))
+        imgui.PopStyleColor()
+
+    elseif _updateStatus == 'ok' then
+        imgui.Spacing()
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.40,0.85,0.45,1.0))
+        imgui.Text(u8('  Ya tienes la version mas reciente.'))
+        imgui.PopStyleColor()
+        imgui.Spacing()
+        imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.10,0.14,0.24,0.80))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18,0.26,0.42,1.00))
+        imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.22,0.32,0.52,1.00))
+        imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(0.60,0.72,0.90,1.00))
+        if imgui.Button(u8('  Verificar de nuevo'), imgui.ImVec2(-1, 26)) then
+            _updateStatus  = nil
+            _updateChecked = false
+        end
+        imgui.PopStyleColor(4)
+
+    elseif _updateStatus == 'available' then
+        imgui.SameLine(nil, 12)
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0,0.82,0.20,1.0))
+        imgui.Text(u8('  Nueva: ' .. _updateLatest))
+        imgui.PopStyleColor()
+        imgui.Spacing()
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.85,0.75,0.30,1.0))
+        imgui.TextWrapped(u8('Hay una actualizacion disponible. Descargala desde el repositorio del autor.'))
+        imgui.PopStyleColor()
+        imgui.Spacing()
+        imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.10,0.14,0.24,0.80))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18,0.26,0.42,1.00))
+        imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.22,0.32,0.52,1.00))
+        imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(0.60,0.72,0.90,1.00))
+        if imgui.Button(u8('  Verificar de nuevo'), imgui.ImVec2(-1, 26)) then
+            _updateStatus  = nil
+            _updateChecked = false
+        end
+        imgui.PopStyleColor(4)
+    end
+    imgui.Spacing()
+end
+
+-- ---- TAB: TECLAS --------------------------------------------
+local function drawTabTeclas()
+    imgui.Spacing()
+
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
+    imgui.Text(u8('  Hotkeys personalizadas'))
+    imgui.PopStyleColor()
+    imgui.Separator()
+    imgui.Spacing()
+
+    imgui.TextWrapped(u8('Asigna un boton del teclado para abrir y cerrar esta ventana de configuracion desde cualquier momento (sin necesidad de escribir /chconfig).'))
+    imgui.Spacing(); imgui.Spacing()
+
+    imgui.Text(u8('Tecla actual:'))
+    imgui.SameLine(nil, 8)
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.6,0.9,0.6,1.0))
+    imgui.Text(hotkeyLastName)
+    imgui.PopStyleColor()
+
+    imgui.Spacing()
+
+    if hotkeyCapture then
+        imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.55,0.20,0.20,1.00))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.70,0.28,0.28,1.00))
+        imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.80,0.32,0.32,1.00))
+        imgui.Button(u8('  [ Presiona una tecla... ]'), imgui.ImVec2(-1, 32))
+        imgui.PopStyleColor(3)
+    else
+        imgui.PushStyleColor(imgui.Col.Button,        C.btn.vec)
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, C.btnHov.vec)
+        imgui.PushStyleColor(imgui.Col.ButtonActive,  C.btnAct.vec)
+        if imgui.Button(u8('  Asignar tecla...'), imgui.ImVec2(-1, 32)) then
+            hotkeyCapture = true
+        end
+        imgui.PopStyleColor(3)
+    end
+
+    imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.25,0.10,0.10,0.90))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.40,0.14,0.14,1.00))
+    imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.55,0.18,0.18,1.00))
+    if imgui.Button(u8('  Quitar hotkey'), imgui.ImVec2(-1, 28)) then
+        hotkeyCapture  = false
+        hotkeyVK       = 0
+        hotkeyLastName = 'Ninguna'
+        cfgSet('hotkey.settings', '0')
+    end
+    imgui.PopStyleColor(3)
+
+    imgui.Spacing(); imgui.Spacing()
+    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.40,0.40,0.50,1.0))
+    imgui.TextWrapped(u8('Nota: la hotkey solo funciona cuando el chat/input esta cerrado. Teclas recomendadas: F1-F4, F8-F12, Insert, numpad, letras, etc.'))
+    imgui.PopStyleColor()
+end
+
+-- ============================================================
 --  VENTANA PRINCIPAL
 -- ============================================================
 local chatWindow = imgui.OnFrame(
     function()
-        return #messages > 0
-            and not isPauseMenuActive()
+        return not isPauseMenuActive()
             and sampIsChatVisible()
             and not sampIsScoreboardOpen()
             and showChat
     end,
-    function(self)   -- _before
+    function(self)
         flushDirty()
         local needsMouse = openChat or (showSettings and showSettings[0])
         imgui.DisableMouseInput = not needsMouse
@@ -759,32 +1210,32 @@ local chatWindow = imgui.OnFrame(
             imgui.InvalidateFontsTexture()
         end
     end,
-    function(self)   -- _draw
+    function(self)
         contextMenuOpen = false
         if os.clock() > _selPreviewTimeout then _selPreviewActive = false end
- 
+
         if openChat then
             if not sampIsCursorActive() then sampToggleCursor(true) end
             imgui.CaptureMouseFromApp(true)
         else
             imgui.CaptureMouseFromApp(false)
         end
- 
+
         local lineH  = imgui.GetTextLineHeightWithSpacing()
         local chatH  = lineH * chatLines + 52
         local extraH = (searchActive and openChat) and (lineH + 12) or 0
- 
+
         imgui.SetNextWindowPos(imgui.ImVec2(2, 10))
         imgui.SetNextWindowSize(imgui.ImVec2(1022, chatH + extraH))
         imgui.PushStyleColor(imgui.Col.WindowBg, C.chat.vec)
         imgui.PushStyleColor(imgui.Col.Border,   C.border.vec)
         imgui.PushStyleColor(imgui.Col.Text,      C.text.vec)
         imgui.SetNextWindowBgAlpha(openColor)
- 
+
         local flags = imgui.WindowFlags.NoDecoration + imgui.WindowFlags.NoSavedSettings
         if not openChat then flags = flags + imgui.WindowFlags.NoMouseInputs end
         imgui.Begin('##ChatMain', nil, flags)
- 
+
         if openChat
             and imgui.IsMouseClicked(0)
             and not imgui.IsWindowHovered(imgui.HoveredFlags.AnyWindow)
@@ -792,7 +1243,7 @@ local chatWindow = imgui.OnFrame(
             and not imgui.IsPopupOpen('##edit_msg') then
             closeChat()
         end
- 
+
         if openChat then
             imgui.SetCursorPos(imgui.ImVec2(4, 12))
             imgui.PushStyleColor(imgui.Col.Text,             imgui.ImVec4(0,0,0,0))
@@ -810,11 +1261,11 @@ local chatWindow = imgui.OnFrame(
             imgui.PopStyleVar(2)
             imgui.PopStyleColor(6)
         end
- 
+
         imgui.SetCursorPos(imgui.ImVec2(24, 12))
         imgui.BeginChild('##msgs', imgui.ImVec2(0, lineH * chatLines + 4), false,
             imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
- 
+
         local showAll = not (searchActive and ffi.string(searchBuf) ~= '')
         local searchSet = {}
         if not showAll then
@@ -837,17 +1288,23 @@ local chatWindow = imgui.OnFrame(
                 end
             end
         end
+
         current_scroll = imgui.GetScrollY()
         max_scroll     = imgui.GetScrollMaxY()
         imgui.SetScrollY(setup_current_scroll)
         imgui.EndChild()
- 
-        if _pendingContextMenu then
-            _pendingContextMenu = false
-            imgui.OpenPopup('##ctx_msg')
-        end
- 
-        if openChat then
+
+            if _pendingContextMenu then
+                _pendingContextMenu = false
+                imgui.OpenPopup('##ctx_msg')
+            end
+
+            if _pendingEditModal then
+                _pendingEditModal = false
+                imgui.OpenPopup('##edit_msg')
+            end
+
+            if openChat then
             if searchActive then
                 imgui.SetCursorPosX(24)
                 imgui.PushStyleColor(imgui.Col.FrameBg, C.input.vec)
@@ -867,7 +1324,7 @@ local chatWindow = imgui.OnFrame(
                 end
                 imgui.PopStyleColor(3)
             end
- 
+
             imgui.SetCursorPosX(24)
             local langStr = 'EN'
             if ffi.C.GetKeyboardLayoutNameA(layout) then
@@ -903,18 +1360,12 @@ local chatWindow = imgui.OnFrame(
             if over then imgui.TextColored(imgui.ImVec4(1,0.25,0.25,1), charCount..'/'..SAMP_INPUT_LIMIT)
             else         imgui.TextColored(C.timestamp.vec,              charCount..'/'..SAMP_INPUT_LIMIT) end
         end
- 
-        if filterEnabled and not openChat then
-            imgui.SetCursorPos(imgui.ImVec2(24, lineH * chatLines + 6))
-            imgui.TextColored(imgui.ImVec4(0.9,0.6,0.1,1), u8('[FILTRO ACTIVO]'))
-            imgui.SameLine(nil, 4)
-        end
+
         if not openChat and unreadCount > 0 then
-            if not filterEnabled then imgui.SetCursorPos(imgui.ImVec2(24, lineH * chatLines + 20)) end
+            imgui.SetCursorPos(imgui.ImVec2(24, lineH * chatLines + 20))
             imgui.TextColored(C.unread.vec, string.format('+ %d nuevo(s)', unreadCount))
         end
- 
-        -- POPUP: cierra solo si el chat se cerro mientras estaba abierto
+
         contextMenuOpen = contextMenuOpen or imgui.IsPopupOpen('##ctx_msg')
         imgui.PushStyleColor(imgui.Col.PopupBg,   imgui.ImVec4(0.10, 0.10, 0.13, 0.97))
         imgui.PushStyleColor(imgui.Col.Separator, imgui.ImVec4(1, 1, 1, 0.06))
@@ -947,6 +1398,23 @@ local chatWindow = imgui.OnFrame(
                 imgui.CloseCurrentPopup()
             end
             imgui.Spacing(); imgui.Separator(); imgui.Spacing()
+            imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.18,0.10,0.32,0.85))
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.35,0.15,0.55,1.00))
+            imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.50,0.20,0.70,1.00))
+            imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(0.85,0.65,1.00,1.00))
+            if imgui.Button(u8('  Filtrar mensaje'), imgui.ImVec2(BTN_W, BTN_H)) then
+                if m then
+                    local plain = stripTags(u8:decode(m.text)):match('^%s*(.-)%s*$')
+                    if addBlockedPattern(plain) then
+                        saveBlocked()
+                    end
+                    -- Borrar este mensaje y todos los iguales del historial
+                    purgeBlockedFromHistory()
+                end
+                imgui.CloseCurrentPopup()
+            end
+            imgui.PopStyleColor(4)
+            imgui.Spacing(); imgui.Separator(); imgui.Spacing()
             if imgui.Button(u8('  Editar'), imgui.ImVec2(BTN_W, BTN_H)) then
                 editId = mid
                 if m then
@@ -954,7 +1422,8 @@ local chatWindow = imgui.OnFrame(
                     imgui.StrCopy(editLine,  m.text)
                     imgui.StrCopy(editTime,  m.timestamp:match('%[(.+)%]') or '')
                 end
-                imgui.OpenPopup('##edit_msg')
+                _pendingEditModal = true
+                imgui.CloseCurrentPopup()
             end
             imgui.PopStyleColor(4)
             imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.38,0.10,0.10,0.80))
@@ -969,57 +1438,60 @@ local chatWindow = imgui.OnFrame(
                 imgui.CloseCurrentPopup()
             end
             imgui.PopStyleColor(4)
-            imgui.SetNextWindowSize(imgui.ImVec2(500, 0), imgui.Cond.Always)
-            imgui.PushStyleColor(imgui.Col.PopupBg, imgui.ImVec4(0.10,0.10,0.13,0.98))
-            if imgui.BeginPopupModal('##edit_msg', nil, imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.AlwaysAutoResize) then
-                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.55,0.55,0.68,1.0))
-                imgui.Text(u8('  Editar mensaje  #'..editId))
-                imgui.PopStyleColor()
-                imgui.Spacing()
-                imgui.PushStyleColor(imgui.Col.Separator, imgui.ImVec4(1,1,1,0.07))
-                imgui.Separator()
-                imgui.PopStyleColor()
-                imgui.Spacing()
-                imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.16,0.16,0.22,1.0))
-                imgui.Text(u8('Texto:')); imgui.PushItemWidth(-1)
-                imgui.InputText('##et', editLine, ffi.sizeof(editLine) - 1)
-                imgui.PopItemWidth(); imgui.Spacing()
-                imgui.Columns(2, nil, false)
-                imgui.Text(u8('Color (RRGGBB):')); imgui.PushItemWidth(-1)
-                imgui.InputText('##ec', editColor, ffi.sizeof(editColor) - 1); imgui.PopItemWidth()
-                imgui.NextColumn()
-                imgui.Text(u8('Hora (HH:MM:SS):')); imgui.PushItemWidth(-1)
-                imgui.InputText('##eh', editTime, ffi.sizeof(editTime) - 1); imgui.PopItemWidth()
-                imgui.Columns(1); imgui.PopStyleColor()
-                imgui.Spacing(); imgui.Spacing()
-                local half = (imgui.GetContentRegionAvail().x - 6) * 0.5
-                imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.20,0.38,0.22,0.90))
-                imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.28,0.54,0.30,1.00))
-                imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.34,0.64,0.36,1.00))
-                imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(0.85,1.00,0.85,1.00))
-                if imgui.Button(u8('  Aplicar'), imgui.ImVec2(half, 30)) then
-                    messages[editId] = {
-                        text      = ffi.string(editLine),
-                        color     = '{'..ffi.string(editColor)..'}',
-                        timestamp = '['..ffi.string(editTime)..']',
-                        msgType   = messages[editId] and messages[editId].msgType or 1,
-                    }
-                    imgui.CloseCurrentPopup()
-                end
-                imgui.PopStyleColor(4)
-                imgui.SameLine(nil, 6)
-                imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.18,0.18,0.24,0.80))
-                imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.28,0.28,0.40,1.00))
-                imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.35,0.35,0.55,1.00))
-                imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(0.75,0.75,0.82,1.00))
-                if imgui.Button(u8('  Cancelar'), imgui.ImVec2(half, 30)) then imgui.CloseCurrentPopup() end
-                imgui.PopStyleColor(4)
-                imgui.EndPopup()
-            end
-            imgui.PopStyleColor()
             imgui.EndPopup()
         end
         imgui.PopStyleColor(2)
+
+        -- Modal de edicin al mismo nivel que el contextual (no anidado dentro de l)
+        imgui.SetNextWindowSize(imgui.ImVec2(500, 0), imgui.Cond.Always)
+        imgui.PushStyleColor(imgui.Col.PopupBg, imgui.ImVec4(0.10,0.10,0.13,0.98))
+        if imgui.BeginPopupModal('##edit_msg', nil, imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.AlwaysAutoResize) then
+            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.55,0.55,0.68,1.0))
+            imgui.Text(u8('  Editar mensaje  #'..editId))
+            imgui.PopStyleColor()
+            imgui.Spacing()
+            imgui.PushStyleColor(imgui.Col.Separator, imgui.ImVec4(1,1,1,0.07))
+            imgui.Separator()
+            imgui.PopStyleColor()
+            imgui.Spacing()
+            imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.16,0.16,0.22,1.0))
+            imgui.Text(u8('Texto:')); imgui.PushItemWidth(-1)
+            imgui.InputText('##et', editLine, ffi.sizeof(editLine) - 1)
+            imgui.PopItemWidth(); imgui.Spacing()
+            imgui.Columns(2, nil, false)
+            imgui.Text(u8('Color (RRGGBB):')); imgui.PushItemWidth(-1)
+            imgui.InputText('##ec', editColor, ffi.sizeof(editColor) - 1); imgui.PopItemWidth()
+            imgui.NextColumn()
+            imgui.Text(u8('Hora (HH:MM:SS):')); imgui.PushItemWidth(-1)
+            imgui.InputText('##eh', editTime, ffi.sizeof(editTime) - 1); imgui.PopItemWidth()
+            imgui.Columns(1); imgui.PopStyleColor()
+            imgui.Spacing(); imgui.Spacing()
+            local half = (imgui.GetContentRegionAvail().x - 6) * 0.5
+            imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.20,0.38,0.22,0.90))
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.28,0.54,0.30,1.00))
+            imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.34,0.64,0.36,1.00))
+            imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(0.85,1.00,0.85,1.00))
+            if imgui.Button(u8('  Aplicar'), imgui.ImVec2(half, 30)) then
+                messages[editId] = {
+                    text      = ffi.string(editLine),
+                    color     = '{'..ffi.string(editColor)..'}',
+                    timestamp = '['..ffi.string(editTime)..']',
+                    msgType   = messages[editId] and messages[editId].msgType or 1,
+                }
+                imgui.CloseCurrentPopup()
+            end
+            imgui.PopStyleColor(4)
+            imgui.SameLine(nil, 6)
+            imgui.PushStyleColor(imgui.Col.Button,        imgui.ImVec4(0.18,0.18,0.24,0.80))
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.28,0.28,0.40,1.00))
+            imgui.PushStyleColor(imgui.Col.ButtonActive,  imgui.ImVec4(0.35,0.35,0.55,1.00))
+            imgui.PushStyleColor(imgui.Col.Text,          imgui.ImVec4(0.75,0.75,0.82,1.00))
+            if imgui.Button(u8('  Cancelar'), imgui.ImVec2(half, 30)) then imgui.CloseCurrentPopup() end
+            imgui.PopStyleColor(4)
+            imgui.EndPopup()
+        end
+        imgui.PopStyleColor()
+
         imgui.End()
         imgui.PopStyleColor(3)
     end
@@ -1034,7 +1506,7 @@ local settingsWindow = imgui.OnFrame(
     function()
         local sx, sy = getScreenResolution()
         imgui.SetNextWindowPos(imgui.ImVec2(sx/2, sy/2), imgui.Cond.FirstUseEver, imgui.ImVec2(0.5,0.5))
-        imgui.SetNextWindowSize(imgui.ImVec2(620, 540), imgui.Cond.FirstUseEver)
+        imgui.SetNextWindowSize(imgui.ImVec2(640, 580), imgui.Cond.FirstUseEver)
 
         imgui.PushStyleColor(imgui.Col.WindowBg,       imgui.ImVec4(0.08, 0.08, 0.11, 0.98))
         imgui.PushStyleColor(imgui.Col.TitleBg,        imgui.ImVec4(0.08, 0.08, 0.11, 1.00))
@@ -1053,366 +1525,32 @@ local settingsWindow = imgui.OnFrame(
         local selH = imgui.ImVec4(C.selHovered.vec.x, C.selHovered.vec.y, C.selHovered.vec.z, math.min(C.selHovered.vec.w, 0.70))
         imgui.PushStyleColor(imgui.Col.Header,         selN)
         imgui.PushStyleColor(imgui.Col.HeaderHovered,  selH)
+        imgui.PushStyleColor(imgui.Col.TextSelectedBg, selN)
 
         imgui.Begin(u8('Chat MImGui  |  Configuracion'), showSettings)
 
         if imgui.BeginTabBar('##tabs') then
-
-            -- ==========================================
-            --  TAB: APARIENCIA
-            -- ==========================================
             if imgui.BeginTabItem(u8(' Apariencia ')) then
-                imgui.Spacing()
-
-                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
-                imgui.Text(u8('  Fuente y tamano'))
-                imgui.PopStyleColor()
-                imgui.Separator()
-                imgui.Spacing()
-
-                if #fonts > 0 then
-                    imgui.Text(u8('Fuente:'))
-                    imgui.PushItemWidth(-1)
-                    if imgui.Combo('##fcmb', fontSelected, fontsArray, #fonts) then
-                        fontChanged = true
-                        cfgSet('val.font_name', fonts[fontSelected[0]+1] or cfgGet('val.font_name'))
-                    end
-                    imgui.PopItemWidth()
-                end
-                imgui.Spacing()
-                if imgui.SliderInt(u8('Tamano de fuente'), fontSize, 8, 36) then
-                    fontSizeChanged = true
-                    cfgSet('val.font_size', tostring(fontSize[0]))
-                end
-                imgui.Spacing()
-                if imgui.SliderInt(u8('Lineas visibles del chat'), chatLinesInt, 4, 60) then
-                    chatLines = chatLinesInt[0]
-                    cfgSet('val.line_count', tostring(chatLines))
-                end
-
-                imgui.Spacing()
-                imgui.Spacing()
-                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
-                imgui.Text(u8('  Colores de chat'))
-                imgui.PopStyleColor()
-                imgui.Separator()
-                imgui.Spacing()
-
-                local SEL_ALPHA_CAP = { ['color.sel_normal'] = 0.55, ['color.sel_hovered'] = 0.70 }
-                local function colorRow(label, entry, dbKey)
-                    imgui.Text(label)
-                    imgui.SameLine(imgui.GetWindowWidth() - 56)
-                    if imgui.ColorEdit4('##' .. dbKey, entry.flt,
-                        imgui.ColorEditFlags.NoInputs + imgui.ColorEditFlags.NoLabel +
-                        imgui.ColorEditFlags.AlphaBar + imgui.ColorEditFlags.AlphaPreview) then
-                        local cap = SEL_ALPHA_CAP[dbKey]
-                        if cap then entry.flt[3] = math.min(entry.flt[3], cap) end
-                        syncVec(entry)
-                        cfgSet(dbKey, fltToStr(entry.flt))
-                    end
-                    if SEL_ALPHA_CAP[dbKey] then
-                        if imgui.IsItemActive() or imgui.IsItemHovered() then
-                            local cap = SEL_ALPHA_CAP[dbKey]
-                            entry.flt[3] = math.min(entry.flt[3], cap)
-                            syncVec(entry)
-                            _selPreviewActive  = true
-                            _selPreviewTimeout = os.clock() + 0.3
-                            showChat           = true
-                        end
-                    end
-                end
-
-                colorRow(u8('Fondo del chat:'),        C.chat,      'color.chat_bg')
-                colorRow(u8('Fondo del input:'),       C.input,     'color.input_bg')
-                colorRow(u8('Borde de ventana:'),      C.border,    'color.border')
-                colorRow(u8('Color del texto:'),       C.text,      'color.text_color')
-                colorRow(u8('Timestamps:'),            C.timestamp, 'color.timestamp')
-                colorRow(u8('Badge no leidos:'),       C.unread,    'color.unread')
-                colorRow(u8('Seleccion mensajes:'),    C.selNormal,  'color.sel_normal')
-                colorRow(u8('Seleccion hover:'),       C.selHovered, 'color.sel_hovered')
-
-                imgui.Spacing()
-                imgui.Spacing()
-                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
-                imgui.Text(u8('  Scrollbar'))
-                imgui.PopStyleColor()
-                imgui.Separator()
-                imgui.Spacing()
-
-                colorRow(u8('Fondo scrollbar:'),  C.scrollBG,        'color.scroll_bg')
-                colorRow(u8('Cursor scrollbar:'), C.scrollGrab,      'color.scroll_grab')
-                colorRow(u8('Cursor activo:'),    C.scrollGrabActive,'color.scroll_grab_act')
-                colorRow(u8('Fondo hover:'),      C.scrollHov,       'color.scroll_hov')
-                colorRow(u8('Fondo activo:'),     C.scrollAct,       'color.scroll_act')
-
-                imgui.Spacing()
-                imgui.Spacing()
-                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
-                imgui.Text(u8('  Botones del menu contextual'))
-                imgui.PopStyleColor()
-                imgui.Separator()
-                imgui.Spacing()
-
-                colorRow(u8('Boton normal:'), C.btn,    'color.btn')
-                colorRow(u8('Boton hover:'),  C.btnHov, 'color.btn_hov')
-                colorRow(u8('Boton activo:'), C.btnAct, 'color.btn_act')
-
-                imgui.Spacing()
-                imgui.Spacing()
-                if imgui.Button(u8('  Restablecer colores'), imgui.ImVec2(-1, 28)) then
-                    db_exec('DELETE FROM config WHERE key LIKE "color.%";')
-                    _dirty = {}
-                    loadConfig()
-                end
-                imgui.Spacing()
-                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.40,0.40,0.50,1.0))
-                imgui.TextWrapped(u8('Los cambios se aplican y guardan automaticamente.'))
-                imgui.PopStyleColor()
-
+                drawTabApariencia()
                 imgui.EndTabItem()
             end
-
-            -- ==========================================
-            --  TAB: FILTROS
-            -- ==========================================
             if imgui.BeginTabItem(u8(' Filtros ')) then
-                imgui.Spacing()
-
-                local enBool = imgui.new.bool(filterEnabled)
-                if imgui.Checkbox(u8('  Activar filtrado de mensajes'), enBool) then
-                    filterEnabled = enBool[0]
-                    cfgSet('filter.enabled', filterEnabled and '1' or '0')
-                end
-                imgui.SameLine(nil, 12)
-                if imgui.Checkbox(u8('Invertir filtro'), filterInvert) then
-                    cfgSet('filter.invert', filterInvert[0] and '1' or '0')
-                end
-
-                imgui.Spacing()
-                imgui.Separator()
-                imgui.Spacing()
-
-                if not filterEnabled then
-                    imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, 0.38)
-                end
-
-                imgui.Text(u8('Tipo de mensaje:'))
-                imgui.PushItemWidth(-1)
-                if imgui.Combo('##fmode', filterMode, filterModeNames, 4) then
-                    cfgSet('filter.mode', tostring(filterMode[0]))
-                end
-                imgui.PopItemWidth()
-
-                imgui.Spacing()
-
-                imgui.Text(u8('Contiene texto:'))
-                imgui.PushItemWidth(imgui.GetContentRegionAvail().x - 140)
-                if imgui.InputText('##ftext', filterTextBuf, ffi.sizeof(filterTextBuf)-1) then
-                    cfgSet('filter.text', ffi.string(filterTextBuf))
-                end
-                imgui.PopItemWidth()
-                imgui.SameLine(nil, 8)
-                if imgui.Checkbox(u8('Mayus/Min'), filterCaseSensitive) then
-                    cfgSet('filter.case_sensitive', filterCaseSensitive[0] and '1' or '0')
-                end
-
-                imgui.Spacing()
-
-                imgui.Text(u8('Prefijo / Jugador:'))
-                imgui.PushItemWidth(-1)
-                if imgui.InputText('##fprefix', filterPrefixBuf, ffi.sizeof(filterPrefixBuf)-1) then
-                    cfgSet('filter.prefix', ffi.string(filterPrefixBuf))
-                end
-                imgui.PopItemWidth()
-
-                imgui.Spacing()
-
-                imgui.Text(u8('Color del mensaje (RRGGBB, parcial):'))
-                imgui.PushItemWidth(160)
-                if imgui.InputText('##fcolor', filterColorBuf, ffi.sizeof(filterColorBuf)-1) then
-                    cfgSet('filter.color', ffi.string(filterColorBuf))
-                end
-                imgui.PopItemWidth()
-
-                imgui.Spacing()
-
-                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
-                imgui.Text(u8('  Rango de tiempo (HH:MM)'))
-                imgui.PopStyleColor()
-                imgui.Separator()
-                imgui.Spacing()
-
-                imgui.Columns(2, '##timecols', false)
-                imgui.Text(u8('Desde:'))
-                imgui.PushItemWidth(-1)
-                if imgui.InputText('##ftime_from', filterTimeFromBuf, ffi.sizeof(filterTimeFromBuf)-1,
-                    imgui.InputTextFlags.CharsDecimal) then
-                end
-                if imgui.IsItemDeactivatedAfterEdit() then
-                    cfgSet('filter.time_from', ffi.string(filterTimeFromBuf))
-                end
-                imgui.PopItemWidth()
-                imgui.NextColumn()
-                imgui.Text(u8('Hasta:'))
-                imgui.PushItemWidth(-1)
-                if imgui.InputText('##ftime_to', filterTimeToBuf, ffi.sizeof(filterTimeToBuf)-1,
-                    imgui.InputTextFlags.CharsDecimal) then
-                end
-                if imgui.IsItemDeactivatedAfterEdit() then
-                    cfgSet('filter.time_to', ffi.string(filterTimeToBuf))
-                end
-                imgui.PopItemWidth()
-                imgui.Columns(1)
-
-                imgui.Spacing()
-                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.40,0.40,0.50,1.0))
-                imgui.Text(u8('Formato: 14:30  (dejar vacio = sin limite)'))
-                imgui.PopStyleColor()
-
-                if not filterEnabled then imgui.PopStyleVar() end
-
-                imgui.Spacing()
-                imgui.Separator()
-                imgui.Spacing()
-
-                if filterEnabled then
-                    local visible, total = 0, #messages
-                    for _, m in ipairs(messages) do
-                        if msgPassesFilter(m) then visible = visible + 1 end
-                    end
-                    local pct = total > 0 and math.floor(visible/total*100) or 0
-                    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.5,0.9,0.5,1))
-                    imgui.Text(string.format(u8('  Visibles: %d / %d  (%d%%)'), visible, total, pct))
-                    imgui.PopStyleColor()
-                    local bw = imgui.GetContentRegionAvail().x
-                    local ratio = total > 0 and (visible/total) or 0
-                    local drawList = imgui.GetWindowDrawList()
-                    local cp = imgui.GetCursorScreenPos()
-                    drawList:AddRectFilled(
-                        imgui.ImVec2(cp.x, cp.y),
-                        imgui.ImVec2(cp.x + bw, cp.y + 4),
-                        imgui.ColorConvertFloat4ToU32(imgui.ImVec4(0.2,0.2,0.3,1)))
-                    drawList:AddRectFilled(
-                        imgui.ImVec2(cp.x, cp.y),
-                        imgui.ImVec2(cp.x + bw * ratio, cp.y + 4),
-                        imgui.ColorConvertFloat4ToU32(imgui.ImVec4(0.4,0.8,0.4,1)))
-                    imgui.Dummy(imgui.ImVec2(bw, 6))
-                else
-                    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.4,0.4,0.5,1))
-                    imgui.Text(u8('  Activa el filtro para ver estadisticas.'))
-                    imgui.PopStyleColor()
-                end
-
-                imgui.Spacing()
-                if imgui.Button(u8('  Limpiar todos los filtros'), imgui.ImVec2(-1, 28)) then
-                    filterMode[0]      = 0
-                    filterCaseSensitive[0] = false
-                    filterInvert[0]    = false
-                    imgui.StrCopy(filterTextBuf,     '')
-                    imgui.StrCopy(filterColorBuf,    '')
-                    imgui.StrCopy(filterPrefixBuf,   '')
-                    imgui.StrCopy(filterTimeFromBuf, '')
-                    imgui.StrCopy(filterTimeToBuf,   '')
-                    cfgSet('filter.mode',           '0')
-                    cfgSet('filter.text',           '')
-                    cfgSet('filter.color',          '')
-                    cfgSet('filter.prefix',         '')
-                    cfgSet('filter.time_from',      '')
-                    cfgSet('filter.time_to',        '')
-                    cfgSet('filter.case_sensitive', '0')
-                    cfgSet('filter.invert',         '0')
-                end
+                drawTabFiltros()
                 imgui.EndTabItem()
             end
-
-            -- ==========================================
-            --  TAB: OPCIONES
-            -- ==========================================
             if imgui.BeginTabItem(u8(' Opciones ')) then
-                imgui.Spacing()
-
-                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
-                imgui.Text(u8('  Memoria'))
-                imgui.PopStyleColor()
-                imgui.Separator()
-                imgui.Spacing()
-
-                imgui.Text(u8('Limite de mensajes en memoria:'))
-                imgui.SameLine(nil, 8)
-                local maxBuf = imgui.new.char[8](tostring(MAX_MESSAGES))
-                imgui.PushItemWidth(80)
-                imgui.InputText('##maxmsg', maxBuf, 7, imgui.InputTextFlags.CharsDecimal)
-                if imgui.IsItemDeactivatedAfterEdit() then
-                    local v = tonumber(ffi.string(maxBuf))
-                    if v and v >= 50 and v <= 5000 then
-                        MAX_MESSAGES = v
-                        cfgSet('val.max_msgs', tostring(v))
-                    end
-                end
-                imgui.PopItemWidth()
-                imgui.SameLine(nil, 8)
-                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.4,0.4,0.5,1))
-                imgui.Text(u8('(50 - 5000)'))
-                imgui.PopStyleColor()
-
-                imgui.Spacing()
-                imgui.Spacing()
-                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
-                imgui.Text(u8('  Estadisticas'))
-                imgui.PopStyleColor()
-                imgui.Separator()
-                imgui.Spacing()
-
-                local function statRow(label, val)
-                    imgui.Text(label)
-                    imgui.SameLine(nil, 6)
-                    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.6,0.7,1.0,1.0))
-                    imgui.Text(tostring(val))
-                    imgui.PopStyleColor()
-                end
-                statRow(u8('Mensajes en historial:'),        #messages)
-                statRow(u8('Enviados guardados:'),           #sendHistory)
-                statRow(u8('Sin leer:'),                     unreadCount)
-
-                imgui.Spacing()
-                imgui.Spacing()
-                if imgui.Button(u8('  Limpiar chat'), imgui.ImVec2(-1, 28)) then
-                    messages             = {}
-                    unreadCount          = 0
-                    setup_current_scroll = 0
-                    noScroll             = false
-                end
-                imgui.Spacing()
-                if imgui.Button(u8('  Limpiar historial enviados'), imgui.ImVec2(-1, 28)) then
-                    sendHistory    = {}
-                    lastHistoryIdx = 0
-                end
-
-                imgui.Spacing()
-                imgui.Spacing()
-                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.50,0.50,0.70,1.0))
-                imgui.Text(u8('  Comandos y atajos'))
-                imgui.PopStyleColor()
-                imgui.Separator()
-                imgui.Spacing()
-                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.65,0.65,0.75,1.0))
-                imgui.TextWrapped(u8(
-                    '/timestamp  |  /chconfig  |  /clearchat\n\n' ..
-                    'T / F   abrir chat          F5   ocultar/mostrar\n' ..
-                    'Ctrl+F  buscar              ESC  cerrar input\n' ..
-                    'PgUp/PgDn  scroll rapido    Rueda  desplazar\n' ..
-                    'Flechas arriba/abajo  historial de enviados'
-                ))
-                imgui.PopStyleColor()
-
+                drawTabOpciones()
                 imgui.EndTabItem()
             end
-
+            if imgui.BeginTabItem(u8(' Teclas ')) then
+                drawTabTeclas()
+                imgui.EndTabItem()
+            end
             imgui.EndTabBar()
         end
 
         imgui.End()
-        imgui.PopStyleColor(15)
+        imgui.PopStyleColor(16)
     end
 )
 
@@ -1451,7 +1589,6 @@ local function onSampInputEnable(this)
     lastHistoryIdx  = 0
     _needsFocus     = true
     chatInputActive = false
-    -- *** Habilitar mouse de ImGui al abrir el chat ***
     imgui.DisableMouseInput = false
     if pInput then pInput.iInputEnabled = 1 end
 end
@@ -1461,7 +1598,6 @@ local function onSampInputDisable(this)
     openChat        = false
     chatInputActive = false
     imgui.CaptureMouseFromApp(false)
-    -- *** Deshabilitar mouse de ImGui al cerrar el chat ***
     imgui.DisableMouseInput = true
     if pInput then pInput.iInputEnabled = 0 end
     sampToggleCursor(false)
@@ -1497,7 +1633,6 @@ function main()
 
     pInput = ffi.cast('struct stInputInfo*', sampGetInputInfoPtr())[0]
 
-    -- Cargar mensajes existentes de SAMP
     local chatEntry = ffi.cast('chatInfoMin*', sampGetChatInfoPtr() + 306).chatEntry
     for i = 0, 99 do
         local ce = chatEntry[i]
@@ -1524,7 +1659,6 @@ function main()
 
     memory.setuint8(sampGetBase() + 0x71480, 0xEB, true)
 
-    -- *** Estado inicial: deshabilitar mouse de ImGui hasta que se abra el chat ***
     imgui.DisableMouseInput = true
 
     addEventHandler('onScriptTerminate', function(scr)
@@ -1543,7 +1677,6 @@ function main()
         end
     end)
 
-    -- Hilo: scroll suave
     lua_thread.create(function()
         while true do
             wait(0)
@@ -1561,7 +1694,6 @@ function main()
         end
     end).work_in_pause = true
 
-    -- Hilo: fade del fondo
     lua_thread.create(function()
         while true do
             wait(0)
@@ -1596,26 +1728,53 @@ end
 -- ============================================================
 addEventHandler('onWindowMessage', function(msg, wparam, lparam)
 
-    if msg == 0x0204 and openChat then  -- WM_RBUTTONDOWN
+    -- WM_RBUTTONDOWN: calcular qu mensaje estaba bajo el cursor y sealar apertura del men
+    if msg == 0x0204 and openChat then
+        local mx, my = getCursorPos()
+        local lineH  = imgui.GetTextLineHeightWithSpacing()
+        local winY   = 10 + 12  -- ventana en y=10, child ##msgs en y=12
+        local relY   = my - winY + current_scroll
+        local idx    = math.floor(relY / lineH) + 1
+        if idx >= 1 and idx <= #messages then
+            contextMenuId       = idx
+            _pendingContextMenu = true
+        end
         consumeWindowMessage(true, true, true)
         return
     end
 
-    if msg == 0x0008 then   -- WM_KILLFOCUS
+    if msg == 0x0008 then
         if openChat then closeChat() end
         imgui.CaptureMouseFromApp(false)
         return
     end
 
     if msg == 0x0100 then
-        if wparam == 0x1B and openChat then     -- ESC
+        if hotkeyCapture then
+            if wparam ~= 0x10 and wparam ~= 0x11 and wparam ~= 0x12
+               and wparam ~= 0xA0 and wparam ~= 0xA1
+               and wparam ~= 0xA2 and wparam ~= 0xA3 then
+                hotkeyCapture  = false
+                hotkeyVK       = wparam
+                hotkeyLastName = vkName(wparam)
+                cfgSet('hotkey.settings', tostring(wparam))
+                consumeWindowMessage(true, true, true)
+                return
+            end
+        end
+
+        if wparam == 0x1B and openChat then
             closeChat()
             consumeWindowMessage(true, false)
 
-        elseif wparam == 0x74 then      -- F5
+        elseif wparam == 0x74 then
             showChat = not showChat
 
-        elseif wparam == 0x46 and openChat and imgui.GetIO().KeyCtrl then   -- Ctrl+F
+        elseif hotkeyVK ~= 0 and wparam == hotkeyVK and not openChat then
+            if showSettings then showSettings[0] = not showSettings[0] end
+            consumeWindowMessage(true, false)
+
+        elseif wparam == 0x46 and openChat and imgui.GetIO().KeyCtrl then
             searchActive = not searchActive
             if not searchActive then
                 imgui.StrCopy(searchBuf, '')
@@ -1623,12 +1782,12 @@ addEventHandler('onWindowMessage', function(msg, wparam, lparam)
             end
             consumeWindowMessage(true, false)
 
-        elseif wparam == 0x21 then      -- PgUp
+        elseif wparam == 0x21 then
             noScroll = true
             setup_current_scroll = math.max(0, setup_current_scroll - 200)
             scrollbar[0] = max_scroll - setup_current_scroll
 
-        elseif wparam == 0x22 then      -- PgDn
+        elseif wparam == 0x22 then
             noScroll = true
             if setup_current_scroll + 200 <= max_scroll then
                 setup_current_scroll = setup_current_scroll + 200
@@ -1642,12 +1801,11 @@ addEventHandler('onWindowMessage', function(msg, wparam, lparam)
 
     elseif msg == 0x0101 then
         if openChat then
-            if wparam == 0x0D then      -- Enter
+            if wparam == 0x0D then
                 local text = u8:decode(ffi.string(inputChat))
                 if text == '/timestamp' then
                     timestampStatus = not timestampStatus
                     cfgSet('val.timestamp', timestampStatus and '1' or '0')
-                    -- Cerrar el chat despues de ejecutar el comando
                     lastHistoryIdx = 0
                     imgui.StrCopy(inputChat, '')
                     closeChat()
@@ -1658,7 +1816,6 @@ addEventHandler('onWindowMessage', function(msg, wparam, lparam)
                     unreadCount          = 0
                     setup_current_scroll = 0
                     noScroll             = false
-                    -- Cerrar el chat despues de ejecutar el comando
                     lastHistoryIdx = 0
                     imgui.StrCopy(inputChat, '')
                     closeChat()
@@ -1666,7 +1823,6 @@ addEventHandler('onWindowMessage', function(msg, wparam, lparam)
                     return true
                 elseif text == '/chconfig' then
                     showSettings[0] = not showSettings[0]
-                    -- Cerrar el chat despues de ejecutar el comando (comportamiento real de CMD)
                     lastHistoryIdx = 0
                     imgui.StrCopy(inputChat, '')
                     closeChat()
@@ -1683,13 +1839,13 @@ addEventHandler('onWindowMessage', function(msg, wparam, lparam)
                 closeChat()
                 consumeWindowMessage(true, false)
 
-            elseif wparam == 0x75 then  -- F6
+            elseif wparam == 0x75 then
                 closeChat()
                 consumeWindowMessage(true, false)
             end
         end
 
-    elseif msg == 0x020A and openChat then   -- WM_MOUSEWHEEL
+    elseif msg == 0x020A and openChat then
         local _, delta = splitsigned(ffi.cast('int32_t', wparam))
         noScroll = true
         local step = 50
