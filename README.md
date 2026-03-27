@@ -30,9 +30,6 @@
 
 </div>
 
-
-</div>
-
 ---
 
 ## Indice
@@ -43,6 +40,8 @@
 - [Instalacion](#instalacion)
 - [Uso](#uso)
 - [Configuracion](#configuracion)
+- [Sistema de Filtros](#sistema-de-filtros)
+- [Sistema de Actualizaciones](#sistema-de-actualizaciones)
 - [Comandos](#comandos)
 - [Atajos de Teclado](#atajos-de-teclado)
 - [Arquitectura](#arquitectura)
@@ -54,7 +53,7 @@
 
 **Chat MImGui** es un script para MoonLoader que reemplaza completamente el sistema de chat nativo de SA-MP. Utiliza la biblioteca MImGui (wrapper de Dear ImGui para MoonLoader) junto con renderizado DirectX9 para proporcionar una experiencia de chat moderna, fluida y altamente personalizable.
 
-El sistema intercepta los mensajes del chat original mediante hooks de bajo nivel, los procesa y renderiza utilizando ImGui, manteniendo toda la funcionalidad original mientras agrega nuevas capacidades como filtros avanzados, busqueda en tiempo real y personalizacion completa de la interfaz.
+El sistema intercepta los mensajes del chat original mediante hooks de bajo nivel en `samp.dll`, los procesa y renderiza utilizando ImGui, manteniendo toda la funcionalidad original mientras agrega nuevas capacidades como bloqueo de patrones, busqueda en tiempo real y personalizacion completa de la interfaz.
 
 ---
 
@@ -62,47 +61,57 @@ El sistema intercepta los mensajes del chat original mediante hooks de bajo nive
 
 ### Interfaz
 - Renderizado mediante **Dear ImGui** con backend DirectX9
-- Animaciones suaves de fade-in/fade-out
-- Scroll suave con interpolacion adaptativa
-- Soporte completo para **colores SAMP** (codigos hexadecimales en texto)
-- Timestamps opcionales en cada mensaje
-- Indicador de mensajes no leidos
+- Animaciones suaves de fade-in/fade-out al abrir/cerrar el chat
+- Scroll suave con interpolacion adaptativa segun la distancia
+- Soporte completo para **colores SAMP** (codigos `{RRGGBB}` y `{RRGGBBAA}` en texto)
+- Efecto de **sombra de texto** opcional (modo display 2 de SAMP)
+- Timestamps opcionales en cada mensaje (`[HH:MM:SS]`)
+- Indicador de mensajes no leidos con badge contador
 - Menu contextual por mensaje (clic derecho)
 
 ### Sistema de Filtros
-- Filtrado por **tipo de mensaje** (Chat, Sistema, Server)
-- Filtrado por **contenido de texto**
-- Filtrado por **prefijo/nombre de jugador**
-- Filtrado por **color del mensaje**
-- Filtrado por **rango de tiempo** (HH:MM)
-- Opcion de **invertir filtros**
-- Sensibilidad a mayusculas configurable
-- Barra de progreso visual de mensajes filtrados
+Basado en **bloqueo de patrones de texto plano**:
+- Cada patron es una cadena de texto que se busca en el contenido del mensaje
+- La comparacion **no distingue mayusculas/minusculas**
+- La coincidencia es **parcial**: si el patron aparece en cualquier parte del mensaje, este se oculta
+- Los patrones se aplican sobre el texto sin codigos de color (`{RRGGBB}`)
+- Los mensajes bloqueados se ocultan **en tiempo real** del chat
+- Al agregar un patron, los mensajes ya existentes en el historial que coincidan se **eliminan automaticamente**
+- Los patrones se **persisten en SQLite** y se restauran al reiniciar
+- Se pueden agregar patrones manualmente desde el panel de configuracion o haciendo **clic derecho** sobre cualquier mensaje y seleccionando `Filtrar mensaje`
 
 ### Personalizacion
 - Selector de **fuentes del sistema** (TTF)
-- Tamano de fuente ajustable (8-36px)
-- Lineas visibles configurables (4-60)
-- **16 colores personalizables**:
+- Tamano de fuente ajustable (8–36 px)
+- Lineas visibles configurables (4–60)
+- **16 colores personalizables** con selector RGBA:
   - Fondo del chat y del input
   - Bordes de ventana
   - Color de texto y timestamps
-  - Colores de seleccion y hover
-  - Scrollbar (fondo, cursor, estados)
-  - Botones del menu contextual
+  - Badge de no leidos
+  - Colores de seleccion y hover por mensaje
+  - Scrollbar (fondo, cursor, estados hover/activo)
+  - Botones del menu contextual (normal, hover, activo)
+- Boton de **restablecer colores** a valores por defecto
 
 ### Almacenamiento
-- Base de datos **SQLite3** local
-- Sistema de **debounce** para escritura optimizada (800ms)
-- Persistencia de todas las configuraciones
-- Limite de mensajes configurable (50-5000)
+- Base de datos **SQLite3** local (`moonloader/config/Chat_MImGui.db`)
+- Sistema de **debounce** para escritura optimizada (800 ms de delay)
+- Persistencia de todas las configuraciones, colores y patrones bloqueados
+- Limite de mensajes en memoria configurable (50–5000)
 
 ### Input
-- Historial de mensajes enviados (flechas arriba/abajo)
-- Autocompletado con Tab
-- Indicador de idioma del teclado
-- Contador de caracteres con limite SAMP (128)
-- Busqueda en tiempo real (Ctrl+F)
+- Historial de mensajes enviados navegable con **flechas arriba/abajo**
+- Autocompletado del ultimo comando SAMP con **Tab**
+- Indicador de idioma del teclado activo (EN / ES / etc.)
+- Contador de caracteres con limite SAMP (**128 caracteres**), en rojo si se supera
+- Busqueda en tiempo real con **Ctrl+F**, con contador de resultados hallados
+
+### Actualizaciones
+- **Verificacion automatica** de versiones al iniciar (descarga discreta en segundo plano)
+- **Notificacion en el chat** del juego si hay una nueva version disponible
+- Panel de estado en la pestana **Opciones** del menu de configuracion
+- Boton directo para **abrir el repositorio** en el navegador
 
 ---
 
@@ -115,17 +124,16 @@ El sistema intercepta los mensajes del chat original mediante hooks de bajo nive
 | MoonLoader | 0.26+ |
 | ASI Loader | Cualquiera |
 
-### Dependencias (incluidas)
-- `mimgui` - Wrapper de ImGui para MoonLoader
-- `encoding` - Conversion de codificaciones (UTF-8, CP1251, etc.)
-- `bitex` - Operaciones de bits extendidas
-- `sqlite3.dll` - Motor de base de datos
+### Dependencias (incluidas en el repositorio)
+- `mimgui` — Wrapper de Dear ImGui para MoonLoader (FYP)
+- `encoding` — Conversion de codificaciones UTF-8 / CP1252 / CP1251
+- `sqlite3.dll` — Motor de base de datos embebido
 
 ---
 
 ## Instalacion
 
-1. **Descargar** el repositorio o los archivos individuales
+1. **Descargar** el repositorio o los archivos individuales desde [GitHub](https://github.com/kxrkoxv/Chat-Imgui)
 
 2. **Copiar** la estructura al directorio de MoonLoader:
    ```
@@ -144,7 +152,7 @@ El sistema intercepta los mensajes del chat original mediante hooks de bajo nive
            └── themes.luac
    ```
 
-3. **Iniciar** el juego - la configuracion se creara automaticamente en:
+3. **Iniciar** el juego. La base de datos de configuracion se creara automaticamente en:
    ```
    moonloader/config/Chat_MImGui.db
    ```
@@ -154,61 +162,158 @@ El sistema intercepta los mensajes del chat original mediante hooks de bajo nive
 ## Uso
 
 ### Abrir el Chat
-Presiona **T** o **F6** para abrir el input del chat. El fondo aparecera con una animacion suave y el cursor se activara automaticamente.
+Presiona **T** o la tecla configurada para abrir el input. El fondo del chat aparece con una animacion de fade-in y el cursor se activa automaticamente.
 
 ### Enviar Mensajes
-Escribe tu mensaje y presiona **Enter**. El mensaje se procesa mediante SAMP y se guarda en el historial local.
+Escribe tu mensaje y presiona **Enter**. El texto se procesa mediante `sampProcessChatInput` y se guarda en el historial local de enviados.
 
-### Navegar el Historial
-- **Flecha Arriba** - Mensaje anterior del historial
-- **Flecha Abajo** - Mensaje siguiente del historial
+### Navegar el Historial de Enviados
+- **Flecha Arriba** — mensaje anterior del historial
+- **Flecha Abajo** — mensaje siguiente del historial
 
-### Menu Contextual
-Haz **clic derecho** sobre cualquier mensaje para:
-- Copiar el texto (sin codigos de color)
-- Copiar al input (con codigos de color)
-- Editar el mensaje localmente
-- Eliminar el mensaje
+### Menu Contextual (clic derecho sobre un mensaje)
+| Opcion | Descripcion |
+|--------|-------------|
+| Copiar texto | Copia el texto sin codigos de color al portapapeles |
+| Copiar al input | Copia el texto con codigos de color al campo de input |
+| Filtrar mensaje | Agrega el texto del mensaje como patron bloqueado |
+| Editar | Abre un modal para editar texto, color y hora del mensaje localmente |
+| Eliminar | Elimina el mensaje del historial local |
 
 ### Scroll
-- **Rueda del mouse** - Desplazamiento fino
-- **PgUp / PgDn** - Desplazamiento rapido
-- **Barra lateral** - Arrastrar para navegar
+- **Rueda del mouse** — desplazamiento fino (paso de 50 px)
+- **PgUp / PgDn** — desplazamiento rapido (paso de 200 px)
+- **Barra lateral vertical** — arrastrar para navegar libremente
 
 ---
 
 ## Configuracion
 
-Accede al panel de configuracion con el comando `/chconfig` o editando los mensajes.
+Accede al panel de configuracion con **`/chconfig`** o con la hotkey personalizada.
 
 ### Pestana: Apariencia
 
 | Opcion | Descripcion | Rango |
 |--------|-------------|-------|
-| Fuente | Selector de fuentes TTF del sistema | - |
-| Tamano de fuente | Pixels de altura | 8-36 |
-| Lineas visibles | Cantidad de lineas mostradas | 4-60 |
-| Colores | 16 selectores de color RGBA | - |
+| Fuente | Selector de fuentes TTF detectadas en la carpeta de Windows | — |
+| Tamano de fuente | Altura en pixeles | 8–36 |
+| Lineas visibles | Cantidad de lineas mostradas en el chat | 4–60 |
+| Colores (x16) | Selectores RGBA para cada elemento visual | — |
+| Restablecer colores | Vuelve todos los colores a los valores por defecto | — |
 
 ### Pestana: Filtros
 
-| Filtro | Descripcion |
-|--------|-------------|
-| Tipo de mensaje | Todos / Chat / Sistema / Server |
-| Contiene texto | Busqueda parcial en contenido |
-| Prefijo/Jugador | Busqueda en nombre del remitente |
-| Color | Codigo hexadecimal (parcial) |
-| Rango de tiempo | Formato HH:MM (desde/hasta) |
-| Invertir | Muestra los que NO coinciden |
-| Mayus/Min | Sensibilidad a mayusculas |
+Gestiona los **patrones de texto bloqueado**:
+
+| Elemento | Descripcion |
+|----------|-------------|
+| Lista de bloqueados | Muestra todos los patrones activos con boton `X` para eliminar cada uno |
+| Campo de texto | Escribe el patron que quieres bloquear |
+| Boton `+ Bloquear` | Agrega el patron escrito a la lista (sin duplicados, case-insensitive) |
+| Borrar todos | Elimina todos los patrones bloqueados de un solo click |
+
+**Como funciona el bloqueo:**
+- El patron se busca con coincidencia parcial en el contenido del mensaje (sin codigos de color)
+- No distingue mayusculas de minusculas
+- Al agregar o eliminar un patron, el historial de mensajes se reprocesa automaticamente
+- Los patrones se guardan en la base de datos y persisten entre sesiones
+- Se puede bloquear un mensaje directamente haciendo clic derecho sobre el y eligiendo `Filtrar mensaje`
 
 ### Pestana: Opciones
 
-| Opcion | Descripcion | Rango |
-|--------|-------------|-------|
-| Limite de mensajes | Maximos en memoria | 50-5000 |
-| Limpiar chat | Borra todos los mensajes | - |
-| Limpiar historial | Borra mensajes enviados | - |
+| Seccion | Opcion | Descripcion |
+|---------|--------|-------------|
+| Memoria | Limite de mensajes | Maximo de mensajes en memoria (50–5000) |
+| Estadisticas | — | Mensajes en historial, enviados guardados, sin leer |
+| Acciones | Limpiar chat | Borra todos los mensajes del historial local |
+| Acciones | Limpiar historial enviados | Borra el historial de mensajes enviados |
+| Comandos y atajos | — | Referencia rapida de comandos y teclas |
+| Actualizaciones | — | Version actual, estado de la ultima verificacion, boton de descarga si hay update |
+| Repositorio | — | Boton para abrir `github.com/kxrkoxv/Chat-Imgui` en el navegador |
+
+### Pestana: Teclas
+
+Asigna una **hotkey personalizada** para abrir/cerrar el panel de configuracion sin necesidad de escribir `/chconfig`.
+
+| Accion | Descripcion |
+|--------|-------------|
+| Asignar tecla | Entra en modo captura y registra la proxima tecla presionada |
+| Quitar hotkey | Desactiva la hotkey asignada |
+
+Teclas recomendadas: F1–F4, F8–F12, Insert, numpad, letras.
+
+---
+
+## Sistema de Filtros
+
+El sistema de filtros funciona exclusivamente mediante **patrones de texto plano bloqueado**. No existe un filtro por tipo de mensaje, color o rango de tiempo — el unico mecanismo es el bloqueo por contenido.
+
+### Flujo completo
+
+```
+Mensaje entrante (SAMP hook)
+        │
+        ▼
+  msgIsBlocked(m)
+  ┌─────────────────────────────────┐
+  │  Para cada patron en la lista:  │
+  │  ¿patron aparece en el texto    │
+  │   (sin tags, lowercase)?        │
+  └─────────────────────────────────┘
+        │
+   Si coincide ──► Mensaje descartado (no se muestra)
+        │
+   Si no coincide ──► pushMsg() ──► messages[] ──► Render
+```
+
+### Funciones internas
+
+| Funcion | Descripcion |
+|---------|-------------|
+| `msgIsBlocked(m)` | Retorna `true` si algun patron coincide con el texto del mensaje |
+| `msgPassesFilter(m)` | Wrapper de `msgIsBlocked`, retorna `true` si el mensaje debe mostrarse |
+| `addBlockedPattern(pat)` | Agrega un patron a la lista (normaliza espacios, previene duplicados) |
+| `removeBlockedPattern(i)` | Elimina el patron en el indice `i` de la lista |
+| `purgeBlockedFromHistory()` | Elimina del historial en memoria todos los mensajes que coincidan con algun patron activo |
+| `saveBlocked()` | Persiste la lista de patrones en SQLite |
+| `serializeBlocked()` | Convierte la lista a string separado por `\n` para almacenamiento |
+| `deserializeBlocked(s)` | Reconstruye la lista de patrones desde el string almacenado |
+
+### Ejemplo de uso
+
+Para bloquear todos los mensajes que contengan "You have been kicked":
+1. Haz clic derecho sobre uno de esos mensajes y selecciona `Filtrar mensaje`, **o**
+2. Ve a `Filtros` en el menu de configuracion, escribe `you have been kicked` en el campo y pulsa `+ Bloquear`
+
+Todos los mensajes existentes y futuros que contengan ese texto (en cualquier combinacion de mayusculas) quedaran ocultos.
+
+---
+
+## Sistema de Actualizaciones
+
+Al iniciar el script (despues de que SA-MP este disponible), se lanza en segundo plano una verificacion de version contra el archivo `version.txt` del repositorio en GitHub.
+
+### Como funciona
+
+1. Se descarga `https://raw.githubusercontent.com/kxrkoxv/Chat-Imgui/main/version.txt` con `downloadUrlToFile`
+2. Se compara la version del archivo con `CURRENT_VERSION` definida en el script
+3. Si hay una version mas nueva disponible:
+   - Se muestra una **notificacion en el chat del juego** con la version disponible y el link al repositorio
+   - El panel **Opciones** del menu de configuracion muestra el numero de version nueva y un boton para abrir el repositorio en el navegador
+4. Si ya estas al dia, el panel muestra `Al dia` sin notificaciones adicionales
+
+### Archivo `version.txt` (repositorio)
+
+El archivo debe contener unicamente la version en formato `MAYOR.MENOR.PARCHE`, por ejemplo:
+```
+1.2.1
+```
+
+### Mantener actualizado el script
+
+Para publicar una nueva version basta con:
+1. Subir el `Chat.lua` con el nuevo numero en `CURRENT_VERSION`
+2. Actualizar `version.txt` con el mismo numero
 
 ---
 
@@ -216,9 +321,9 @@ Accede al panel de configuracion con el comando `/chconfig` o editando los mensa
 
 | Comando | Descripcion |
 |---------|-------------|
-| `/timestamp` | Activa/desactiva timestamps |
-| `/chconfig` | Abre el panel de configuracion |
-| `/clearchat` | Limpia todos los mensajes |
+| `/timestamp` | Activa/desactiva los timestamps `[HH:MM:SS]` en cada mensaje |
+| `/chconfig` | Abre/cierra el panel de configuracion |
+| `/clearchat` | Limpia todos los mensajes del historial local |
 
 ---
 
@@ -228,14 +333,16 @@ Accede al panel de configuracion con el comando `/chconfig` o editando los mensa
 |-------|---------|
 | `T` / `F6` | Abrir chat |
 | `Enter` | Enviar mensaje |
-| `Escape` | Cerrar chat |
-| `F5` | Ocultar/mostrar chat |
-| `Ctrl+F` | Activar busqueda |
-| `PgUp` | Scroll hacia arriba |
-| `PgDn` | Scroll hacia abajo |
-| `Flecha Arriba` | Historial anterior |
-| `Flecha Abajo` | Historial siguiente |
-| `Tab` | Autocompletar |
+| `Escape` | Cerrar input del chat |
+| `F5` | Ocultar / mostrar el chat completo |
+| `Ctrl+F` | Activar / desactivar busqueda en tiempo real |
+| `PgUp` | Scroll hacia arriba (200 px) |
+| `PgDn` | Scroll hacia abajo (200 px) |
+| `Rueda` | Scroll fino (50 px por paso) |
+| `Flecha Arriba` | Historial anterior de mensajes enviados |
+| `Flecha Abajo` | Historial siguiente de mensajes enviados |
+| `Tab` | Autocompletar desde el ultimo input de SAMP |
+| `Hotkey custom` | Abrir/cerrar configuracion (asignable en pestana Teclas) |
 
 ---
 
@@ -243,49 +350,67 @@ Accede al panel de configuracion con el comando `/chconfig` o editando los mensa
 
 ```
 Chat.lua
+├── Version y actualizaciones
+│   ├── CURRENT_VERSION, UPDATE_CHECK_URL, GITHUB_URL
+│   ├── compareVersions()
+│   └── checkForUpdates() — descarga version.txt y notifica si hay update
+│
 ├── FFI Definitions
-│   ├── Windows API (VirtualProtect, VirtualAlloc)
+│   ├── Windows API (VirtualProtect, VirtualAlloc, VirtualFree)
 │   ├── SAMP Structures (stChatEntry, stInputInfo)
 │   └── Locale Functions (GetLocaleInfoA, GetKeyboardLayoutNameA)
 │
 ├── SQLite3 Layer
 │   ├── db_open() / db_close()
 │   ├── db_exec() / db_set() / db_get()
-│   └── Debounce System (markDirty, flushDirty)
+│   └── Debounce System (markDirty, flushDirty — 800ms)
 │
 ├── Hook System
-│   ├── Memory patching con trampolines
-│   ├── onSampChat() - Intercepcion de mensajes
-│   ├── onSampInput() - Sincronizacion de input
-│   └── onSampInputEnable/Disable() - Control de estado
+│   ├── Trampolines en memoria con VirtualAlloc
+│   ├── onSampChat() — intercepta y empuja mensajes al historial
+│   ├── onSampInput() — sincroniza el buffer del input
+│   └── onSampInputEnable/Disable() — controla apertura y cierre del chat
 │
-├── Filter Engine
-│   ├── msgPassesFilter()
-│   ├── Filtros por tipo, texto, color, tiempo
-│   └── Sistema de inversion
+├── Sistema de Filtros
+│   ├── blockedPatterns[] — lista de patrones activos
+│   ├── msgIsBlocked() / msgPassesFilter()
+│   ├── addBlockedPattern() / removeBlockedPattern()
+│   ├── purgeBlockedFromHistory()
+│   └── saveBlocked() / serializeBlocked() / deserializeBlocked()
 │
 ├── ImGui Renderer
-│   ├── renderColorText() - Parser de colores SAMP
-│   ├── chatWindow - Ventana principal
-│   ├── settingsWindow - Panel de configuracion
-│   └── Context menu / Edit popup
+│   ├── renderColorText() — parser de colores {RRGGBB} / {RRGGBBAA}
+│   ├── chatWindow — ventana principal del chat (posicion fija, sin decoracion)
+│   ├── settingsWindow — panel de configuracion con 4 pestanas
+│   │   ├── drawTabApariencia() — fuentes, tamanos, 16 colores RGBA
+│   │   ├── drawTabFiltros() — lista de patrones bloqueados, agregar/eliminar
+│   │   ├── drawTabOpciones() — limites, stats, actualizaciones, GitHub
+│   │   └── drawTabTeclas() — hotkey personalizable para el panel
+│   └── Popups: menu contextual (clic derecho), modal de edicion de mensaje
 │
 └── Event Handlers
-    ├── onWindowMessage() - Teclado y mouse
-    ├── Threads: Scroll suave, Fade animacion
-    └── Script termination cleanup
+    ├── onWindowMessage() — teclado (ESC, F5, Ctrl+F, PgUp/Dn, hotkey), mouse (RButton, scroll)
+    ├── Threads: scroll suave adaptativo, fade-in/fade-out del fondo
+    └── onScriptTerminate — flush de DB, finalize de statements, cierre limpio
 ```
 
 ### Flujo de Datos
 
 ```
-SAMP Chat Hook ──► pushMsg() ──► messages[] ──► renderColorText() ──► ImGui
-                                     │
-                                     ▼
-                              msgPassesFilter()
-                                     │
-                                     ▼
-                              Display/Hidden
+SAMP Chat Hook
+      │
+      ▼
+ onSampChat()
+      │
+      ├── msgIsBlocked()? ──► Si: descartado
+      │
+      └── pushMsg() ──► messages[]
+                              │
+                              ▼
+                       renderColorText()
+                              │
+                              ▼
+                           ImGui
 ```
 
 ---
@@ -295,24 +420,25 @@ SAMP Chat Hook ──► pushMsg() ──► messages[] ──► renderColorTex
 ```
 .
 ├── Chat.lua                 # Script principal (~1800 lineas)
+├── version.txt              # Numero de version para el sistema de actualizaciones
 └── lib/
-    ├── bitex.lua           # Utilidades de manipulacion de bits
-    ├── encoding.lua        # Conversion UTF-8/CP1251/ASCII
-    ├── sqlite3.dll         # Motor SQLite3
+    ├── bitex.lua            # Utilidades de manipulacion de bits
+    ├── encoding.lua         # Conversion UTF-8 / CP1252 / CP1251 / ASCII
+    ├── sqlite3.dll          # Motor SQLite3
     └── mimgui/
-        ├── init.lua        # API publica de MImGui
-        ├── imgui.lua       # Bindings de ImGui
-        ├── dx9.lua         # Backend DirectX9
-        ├── cdefs.lua       # Definiciones C de ImGui
-        ├── cimguidx9.dll   # Biblioteca nativa
-        └── themes.luac     # Temas precompilados
+        ├── init.lua         # API publica de MImGui
+        ├── imgui.lua        # Bindings de Dear ImGui
+        ├── dx9.lua          # Backend DirectX9
+        ├── cdefs.lua        # Definiciones C de ImGui (cimgui)
+        ├── cimguidx9.dll    # Biblioteca nativa compilada
+        └── themes.luac      # Temas precompilados
 ```
 
 ---
 
 ## Base de Datos
 
-El archivo `Chat_MImGui.db` almacena la configuracion en una tabla simple:
+El archivo `Chat_MImGui.db` almacena toda la configuracion en una tabla clave-valor:
 
 ```sql
 CREATE TABLE config (
@@ -321,23 +447,29 @@ CREATE TABLE config (
 );
 ```
 
-### Claves de Configuracion
+### Claves de configuracion
 
-| Prefijo | Descripcion |
-|---------|-------------|
-| `color.*` | Colores RGBA (formato: `R\|G\|B\|A`) |
-| `val.*` | Valores numericos y strings |
-| `filter.*` | Estado de los filtros |
+| Clave | Formato | Descripcion |
+|-------|---------|-------------|
+| `color.*` | `R\|G\|B\|A` (floats 0–1) | Colores RGBA de cada elemento visual |
+| `val.font_size` | entero | Tamano de fuente en px |
+| `val.font_name` | nombre de archivo | Fuente TTF seleccionada |
+| `val.line_count` | entero | Lineas visibles del chat |
+| `val.max_msgs` | entero | Limite de mensajes en memoria |
+| `val.timestamp` | `0` / `1` | Estado de los timestamps |
+| `filter.blocked` | patrones separados por `\n` | Lista de patrones bloqueados |
+| `hotkey.settings` | VK code (entero) | Virtual key code de la hotkey personalizada |
 
 ---
 
 ## Notas Tecnicas
 
-- El script utiliza **hooks de bajo nivel** en direcciones especificas de `samp.dll` (version 0.3.7-R1)
-- Los colores se parsean en formato SAMP (`{RRGGBB}` o `{RRGGBBAA}`)
-- El sistema de debounce agrupa escrituras a la DB para evitar I/O excesivo
-- El renderizado utiliza **clipper** de ImGui para optimizar listas largas
-- La animacion de scroll usa interpolacion adaptativa segun la distancia
+- Los hooks se instalan en direcciones especificas de `samp.dll` version **0.3.7-R1**; otras versiones no son compatibles
+- Los codigos de color se parsean en formato `{RRGGBB}` (expandido a `{RRGGBBFF}` internamente) y `{RRGGBBAA}`
+- El sistema de debounce agrupa escrituras a SQLite para evitar I/O excesivo durante el tipeo o cambios de color
+- El renderizado usa el **ImGuiListClipper** para virtualizar la lista de mensajes y mantener el rendimiento con historiales grandes
+- La animacion de scroll usa interpolacion adaptativa: velocidad mayor cuanto mas lejos esta el destino
+- La verificacion de actualizaciones usa `downloadUrlToFile` (API de MoonLoader) y no bloquea el hilo principal
 
 ---
 
@@ -345,7 +477,7 @@ CREATE TABLE config (
 
 | Rol | Autor |
 |-----|-------|
-| Desarrollo | **kxrko** |
+| Desarrollo | **[kxrko](https://github.com/kxrkoxv)** |
 | MImGui | [FYP](https://github.com/THE-FYP) |
 | Encoding Library | BlastHack Team |
 | Dear ImGui | [Omar Cornut](https://github.com/ocornut) |
@@ -354,6 +486,6 @@ CREATE TABLE config (
 
 <div align="center">
 
-**Chat MImGui** - Desarrollado con dedicacion para la comunidad SA-MP
+**[Chat MImGui](https://github.com/kxrkoxv/Chat-Imgui)** — Desarrollado con dedicacion para la comunidad SA-MP
 
 </div>
