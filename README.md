@@ -291,29 +291,30 @@ Todos los mensajes existentes y futuros que contengan ese texto (en cualquier co
 
 ## Sistema de Actualizaciones
 
-Al iniciar el script (despues de que SA-MP este disponible), se lanza en segundo plano una verificacion de version contra el archivo `version.txt` del repositorio en GitHub.
+Al iniciar el script (antes de que SA-MP este disponible), se lanza en segundo plano una verificacion de version directamente contra el `Chat.lua` del repositorio en GitHub.
 
 ### Como funciona
 
-1. Se descarga `https://raw.githubusercontent.com/kxrkoxv/Chat-Imgui/main/version.txt` con `downloadUrlToFile`
-2. Se compara la version del archivo con `CURRENT_VERSION` definida en el script
-3. Si hay una version mas nueva disponible:
-   - Se muestra una **notificacion en el chat del juego** con la version disponible y el link al repositorio
-   - El panel **Opciones** del menu de configuracion muestra el numero de version nueva y un boton para abrir el repositorio en el navegador
-4. Si ya estas al dia, el panel muestra `Al dia` sin notificaciones adicionales
+1. Se descarga `https://raw.githubusercontent.com/kxrkoxv/Chat-Imgui/main/Chat.lua` con `downloadUrlToFile` (solo los primeros 2 KB del archivo, para ser eficiente)
+2. Se extrae la version remota buscando la linea `CURRENT_VERSION = 'X.Y.Z'` dentro del script descargado. Si no se encuentra ese formato, se busca `script_version_number(X)` como fallback y se convierte a `X.0.0`
+3. Se compara la version remota con `CURRENT_VERSION` del script local usando versionado semantico (`MAYOR.MENOR.PARCHE`)
+4. Segun el resultado:
+   - **Sin cambios**: el panel **Opciones** muestra `Tienes la version mas reciente`
+   - **Actualizacion disponible**: el panel muestra la nueva version y un boton `Actualizar a vX.Y.Z` que descarga el `Chat.lua` completo y lo sobreescribe en disco; al terminar indica que hay que recargar el script (F9 o `/reload`)
+   - **Error de red**: el panel muestra el mensaje de error y un boton `Reintentar`
+5. Desde el panel **Opciones** tambien hay un boton `Verificar actualizaciones` para lanzar el chequeo manualmente en cualquier momento
 
-### Archivo `version.txt` (repositorio)
+### No se usa `version.txt`
 
-El archivo debe contener unicamente la version en formato `MAYOR.MENOR.PARCHE`, por ejemplo:
-```
-1.2.1
-```
+El sistema **no depende de un archivo `version.txt` separado**. La fuente de verdad es siempre la constante `CURRENT_VERSION` dentro del propio `Chat.lua` del repositorio.
 
 ### Mantener actualizado el script
 
 Para publicar una nueva version basta con:
-1. Subir el `Chat.lua` con el nuevo numero en `CURRENT_VERSION`
-2. Actualizar `version.txt` con el mismo numero
+1. Incrementar `CURRENT_VERSION` en `Chat.lua` (por ejemplo `'1.0.0'` → `'1.1.0'`)
+2. Subir el archivo al repositorio en la rama `main`
+
+No es necesario mantener ningun archivo auxiliar de version.
 
 ---
 
