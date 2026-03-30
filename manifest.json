@@ -1,0 +1,31 @@
+{
+  "version": "1.0.1",
+  "files": [
+    {
+      "path": "Chat.lua",
+      "url": "Chat.lua",
+      "required": true
+    },
+    {
+      "path": "lib/sqlite3.dll",
+      "url": "lib/sqlite3.dll",
+      "required": true
+    }
+  ],
+  "libs": [
+    {
+      "name": "mimgui_blur",
+      "check": "lib/mimgui_blur/mimgui_blur_lib.dll",
+      "files": [
+        {
+          "dest": "lib/mimgui_blur/mimgui_blur_lib.dll",
+          "url": "libs/mimgui_blur/mimgui_blur_lib.dll"
+        },
+        {
+          "dest": "lib/mimgui_blur/init.lua",
+          "url": "libs/mimgui_blur/init.lua"
+        }
+      ]
+    }
+  ]
+}
